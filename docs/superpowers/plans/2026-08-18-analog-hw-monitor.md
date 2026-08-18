@@ -3175,3 +3175,756 @@ Run this once after Task 12, with the finished device assembled:
 - [ ] All five needles track their readings under load, and rest at their calibrated zero when idle.
 - [ ] Closing the app drops every needle to zero within about three seconds.
 - [ ] `log.txt` contains the connect and disconnect events from the session.
+
+---
+
+## Addendum — Tasks 13 and 14
+
+Added after the original twelve tasks were built and the application was run against real
+hardware. Task 13 answers a problem the target machine revealed; Task 14 closes a
+presentation gap the plan never covered.
+
+### What the target machine taught us
+
+An HP 8B7C laptop: Intel Core i7-1355U, Intel Iris Xe graphics, no discrete GPU. It runs
+Memory Integrity (HVCI) and Credential Guard, enforced. That blocks the kernel driver
+LibreHardwareMonitor needs, so on this machine:
+
+- Every CPU temperature, clock and power reading is `null`. Loads still work, because
+  Windows serves those from performance counters rather than model-specific registers.
+  Running elevated does not help — what is blocked is the driver, not the privilege.
+- No GPU temperature sensor exists at all for the integrated Iris Xe.
+- GPU load does exist, but is named `D3D 3D`, which no rule in `SensorDefaults` matches.
+- NVMe temperatures work fine (`/nvme/0/temperature/0`), because SMART needs no driver.
+
+Meanwhile ACPI thermal zones, read through WMI with no driver at all, report `CPUZ_0` at
+62 °C and `GFXZ_0` at 25 °C. Two of the five meters were dead for want of a data source
+the operating system was willing to hand over all along.
+
+Confirmed with all nine LibreHardwareMonitor providers enabled: the library does not
+expose ACPI thermal zones. A second sensor source is genuinely needed.
+
+---
+
+### Task 13: ACPI thermal sensor source
+
+**Files:**
+- Create: `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs`
+- Create: `AnalogHwMonitor.Core/CompositeSensorSource.cs`
+- Modify: `AnalogHwMonitor.Core/SensorDefaults.cs`
+- Modify: `AnalogHwMonitor.Core/AnalogHwMonitor.Core.csproj` (add `System.Management`)
+- Modify: `AnalogHwMonitor.App/Program.cs`
+- Test: `AnalogHwMonitor.Tests/CompositeSensorSourceTests.cs`
+- Test: `AnalogHwMonitor.Tests/AcpiThermalSensorSourceTests.cs`
+- Test: `AnalogHwMonitor.Tests/Fakes/ThrowingSensorSource.cs`
+- Test: `AnalogHwMonitor.Tests/SensorDefaultsTests.cs` (append)
+
+**Interfaces:**
+- Consumes: `ISensorSource`, `SensorDescriptor`, `SensorKind`, `IAppLog`, `AppConfig`.
+- Produces:
+  - `sealed class AcpiThermalSensorSource : ISensorSource`, constructor `(IAppLog log)`,
+    constant `IdPrefix = "/acpi/thermalzone/"`.
+  - `sealed class CompositeSensorSource : ISensorSource`, constructor
+    `(IAppLog log, params ISensorSource[] sources)`.
+  - `SensorDefaults.AssignSensors(AppConfig, IReadOnlyList<SensorDescriptor>, Func<string, bool>? isReadable = null)`
+    — a third, optional parameter. Existing two-argument calls keep compiling and keep
+    their current behaviour.
+
+**Why a readability predicate.** This is the crux. On the target machine
+LibreHardwareMonitor reports a sensor literally called `CPU Package`, which matches the
+first pattern of the CPU temperature rule — and reads `null` forever. Name matching alone
+therefore picks the dead sensor over the live ACPI zone every time. Auto-detection must
+prefer a candidate that currently returns a value, falling back to name order only when
+nothing readable matches.
+
+- [ ] **Step 1: Add the package**
+
+```powershell
+dotnet add AnalogHwMonitor.Core package System.Management
+```
+
+- [ ] **Step 2: Add the throwing fake and a Disposed flag**
+
+Create `AnalogHwMonitor.Tests/Fakes/ThrowingSensorSource.cs`:
+
+```csharp
+using AnalogHwMonitor.Core;
+
+namespace AnalogHwMonitor.Tests.Fakes;
+
+/// <summary>Fails at everything, to prove the composite survives a broken source.</summary>
+public sealed class ThrowingSensorSource : ISensorSource
+{
+    public void Refresh() => throw new InvalidOperationException("refresh failed");
+
+    public IReadOnlyList<SensorDescriptor> Discover() => throw new InvalidOperationException("discover failed");
+
+    public float? Read(string sensorId) => throw new InvalidOperationException("read failed");
+
+    public void Dispose()
+    {
+    }
+}
+```
+
+Add a `public bool Disposed { get; private set; }` to `FakeSensorSource`, set by its
+`Dispose()`. Change nothing else about it.
+
+- [ ] **Step 3: Write the failing composite tests**
+
+Create `AnalogHwMonitor.Tests/CompositeSensorSourceTests.cs`:
+
+```csharp
+using AnalogHwMonitor.Core;
+using AnalogHwMonitor.Tests.Fakes;
+using Xunit;
+
+namespace AnalogHwMonitor.Tests;
+
+public class CompositeSensorSourceTests
+{
+    private static FakeSensorSource SourceWith(string id, float? value, string name)
+    {
+        var source = new FakeSensorSource(new Dictionary<string, float?> { [id] = value });
+        source.Sensors.Add(new SensorDescriptor(id, name, "Fake", SensorKind.Temperature, "°C"));
+        return source;
+    }
+
+    [Fact]
+    public void Discover_ConcatenatesEverySource()
+    {
+        var a = SourceWith("a", 1, "A");
+        var b = SourceWith("b", 2, "B");
+        using var composite = new CompositeSensorSource(NullLog.Instance, a, b);
+
+        Assert.Equal(new[] { "a", "b" }, composite.Discover().Select(s => s.Id));
+    }
+
+    [Fact]
+    public void Refresh_RefreshesEverySourceExactlyOnce()
+    {
+        var a = SourceWith("a", 1, "A");
+        var b = SourceWith("b", 2, "B");
+        using var composite = new CompositeSensorSource(NullLog.Instance, a, b);
+
+        composite.Refresh();
+
+        Assert.Equal(1, a.RefreshCount);
+        Assert.Equal(1, b.RefreshCount);
+    }
+
+    [Fact]
+    public void Refresh_KeepsGoingWhenOneSourceThrows()
+    {
+        var healthy = SourceWith("b", 2, "B");
+        using var composite = new CompositeSensorSource(NullLog.Instance, new ThrowingSensorSource(), healthy);
+
+        composite.Refresh();
+
+        Assert.Equal(1, healthy.RefreshCount);
+    }
+
+    [Fact]
+    public void Discover_KeepsGoingWhenOneSourceThrows()
+    {
+        var healthy = SourceWith("b", 2, "B");
+        using var composite = new CompositeSensorSource(NullLog.Instance, new ThrowingSensorSource(), healthy);
+
+        Assert.Equal(new[] { "b" }, composite.Discover().Select(s => s.Id));
+    }
+
+    [Fact]
+    public void Read_FindsTheValueInWhicheverSourceHasIt()
+    {
+        var a = SourceWith("a", 1, "A");
+        var b = SourceWith("b", 2, "B");
+        using var composite = new CompositeSensorSource(NullLog.Instance, a, b);
+
+        Assert.Equal(2f, composite.Read("b"));
+    }
+
+    [Fact]
+    public void Read_ReturnsNullForAnUnknownId()
+    {
+        using var composite = new CompositeSensorSource(NullLog.Instance, SourceWith("a", 1, "A"));
+
+        Assert.Null(composite.Read("nothing"));
+    }
+
+    [Fact]
+    public void Read_ReturnsNullWhenASourceThrows()
+    {
+        using var composite = new CompositeSensorSource(NullLog.Instance, new ThrowingSensorSource());
+
+        Assert.Null(composite.Read("anything"));
+    }
+
+    [Fact]
+    public void Dispose_DisposesEverySource()
+    {
+        var a = SourceWith("a", 1, "A");
+        var b = SourceWith("b", 2, "B");
+        var composite = new CompositeSensorSource(NullLog.Instance, a, b);
+
+        composite.Dispose();
+
+        Assert.True(a.Disposed);
+        Assert.True(b.Disposed);
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they fail**
+
+Run: `dotnet test --filter "FullyQualifiedName~CompositeSensorSourceTests"`
+Expected: build error, `CompositeSensorSource` does not exist.
+
+- [ ] **Step 5: Write the composite**
+
+Create `AnalogHwMonitor.Core/CompositeSensorSource.cs`:
+
+```csharp
+namespace AnalogHwMonitor.Core;
+
+/// <summary>
+/// Presents several sensor sources as one. A source that fails is skipped rather than
+/// allowed to take the others down with it — losing the ACPI zones must not cost us the
+/// CPU load, and vice versa.
+/// </summary>
+public sealed class CompositeSensorSource : ISensorSource
+{
+    private readonly IAppLog _log;
+    private readonly ISensorSource[] _sources;
+    private readonly bool[] _faultReported;
+
+    public CompositeSensorSource(IAppLog log, params ISensorSource[] sources)
+    {
+        _log = log;
+        _sources = sources;
+        _faultReported = new bool[sources.Length];
+    }
+
+    public void Refresh()
+    {
+        for (var i = 0; i < _sources.Length; i++)
+        {
+            Try(i, source =>
+            {
+                source.Refresh();
+                return true;
+            });
+        }
+    }
+
+    public IReadOnlyList<SensorDescriptor> Discover()
+    {
+        var all = new List<SensorDescriptor>();
+        for (var i = 0; i < _sources.Length; i++)
+        {
+            var discovered = Try(i, source => source.Discover());
+            if (discovered is not null)
+            {
+                all.AddRange(discovered);
+            }
+        }
+
+        return all;
+    }
+
+    public float? Read(string sensorId)
+    {
+        for (var i = 0; i < _sources.Length; i++)
+        {
+            var value = Try(i, source => source.Read(sensorId));
+            if (value is not null)
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    public void Dispose()
+    {
+        for (var i = 0; i < _sources.Length; i++)
+        {
+            Try(i, source =>
+            {
+                source.Dispose();
+                return true;
+            });
+        }
+    }
+
+    /// <summary>Runs one source's operation, reporting a persistent fault only once.</summary>
+    private T? Try<T>(int index, Func<ISensorSource, T> operation)
+    {
+        try
+        {
+            var result = operation(_sources[index]);
+            _faultReported[index] = false;
+            return result;
+        }
+        catch (Exception ex)
+        {
+            if (!_faultReported[index])
+            {
+                _log.Write($"Sensor source {_sources[index].GetType().Name} failed: {ex.Message}");
+                _faultReported[index] = true;
+            }
+
+            return default;
+        }
+    }
+}
+```
+
+- [ ] **Step 6: Run the composite tests**
+
+Run: `dotnet test --filter "FullyQualifiedName~CompositeSensorSourceTests"`
+Expected: PASS, 8 tests.
+
+- [ ] **Step 7: Write the ACPI tests**
+
+Create `AnalogHwMonitor.Tests/AcpiThermalSensorSourceTests.cs`:
+
+```csharp
+using AnalogHwMonitor.Core;
+using Xunit;
+
+namespace AnalogHwMonitor.Tests;
+
+/// <summary>
+/// Reading ACPI thermal zones needs an elevated session, so the two hardware tests run
+/// only when AHM_HARDWARE_TESTS=1 and report themselves as skipped otherwise. The third
+/// runs everywhere on purpose: degrading to nothing is the required behaviour.
+/// </summary>
+public class AcpiThermalSensorSourceTests
+{
+    private static bool Enabled =>
+        Environment.GetEnvironmentVariable("AHM_HARDWARE_TESTS") == "1";
+
+    [SkippableFact]
+    public void Discover_FindsThermalZones()
+    {
+        Skip.IfNot(Enabled);
+
+        using var source = new AcpiThermalSensorSource(NullLog.Instance);
+        source.Refresh();
+        var zones = source.Discover();
+
+        Assert.NotEmpty(zones);
+        Assert.All(zones, z => Assert.Equal(SensorKind.Temperature, z.Kind));
+        Assert.All(zones, z => Assert.StartsWith(AcpiThermalSensorSource.IdPrefix, z.Id));
+    }
+
+    [SkippableFact]
+    public void Read_ReturnsAPlausibleTemperature()
+    {
+        Skip.IfNot(Enabled);
+
+        using var source = new AcpiThermalSensorSource(NullLog.Instance);
+        source.Refresh();
+        var zone = source.Discover().First();
+
+        var value = source.Read(zone.Id);
+
+        Assert.NotNull(value);
+        Assert.InRange(value!.Value, -50f, 150f);
+    }
+
+    [Fact]
+    public void Refresh_DegradesToNothingWhenTheQueryIsDenied()
+    {
+        using var source = new AcpiThermalSensorSource(NullLog.Instance);
+
+        source.Refresh();
+
+        Assert.Null(source.Read(AcpiThermalSensorSource.IdPrefix + "NOPE"));
+    }
+}
+```
+
+- [ ] **Step 8: Write the ACPI source**
+
+Create `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs`:
+
+```csharp
+using System.Management;
+
+namespace AnalogHwMonitor.Core;
+
+/// <summary>
+/// Reads ACPI thermal zones through WMI. No kernel driver is involved, which is the whole
+/// point: where Memory Integrity blocks LibreHardwareMonitor's driver, these zones are the
+/// only temperatures available. Needs elevation; without it the query is denied and this
+/// source simply reports nothing rather than failing.
+/// </summary>
+public sealed class AcpiThermalSensorSource : ISensorSource
+{
+    public const string IdPrefix = "/acpi/thermalzone/";
+
+    private readonly IAppLog _log;
+    private readonly Dictionary<string, float> _values = new();
+    private readonly List<SensorDescriptor> _descriptors = new();
+    private bool _faultReported;
+
+    public AcpiThermalSensorSource(IAppLog log) => _log = log;
+
+    public void Refresh()
+    {
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(
+                @"root\wmi",
+                "SELECT InstanceName, CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");
+
+            _values.Clear();
+            _descriptors.Clear();
+
+            foreach (var zone in searcher.Get().Cast<ManagementBaseObject>())
+            {
+                using (zone)
+                {
+                    if (zone["InstanceName"] is not string instance || zone["CurrentTemperature"] is null)
+                    {
+                        continue;
+                    }
+
+                    // WMI reports tenths of a kelvin.
+                    var kelvinTenths = Convert.ToDouble(zone["CurrentTemperature"]);
+                    var celsius = (float)(kelvinTenths / 10.0 - 273.15);
+
+                    var name = ShortName(instance);
+                    var id = IdPrefix + name;
+
+                    _values[id] = celsius;
+                    _descriptors.Add(new SensorDescriptor(
+                        id, name, "ACPI Thermal Zone", SensorKind.Temperature, "°C"));
+                }
+            }
+
+            _faultReported = false;
+        }
+        catch (Exception ex)
+        {
+            if (!_faultReported)
+            {
+                _log.Write($"ACPI thermal zones unavailable: {ex.Message}");
+                _faultReported = true;
+            }
+
+            _values.Clear();
+            _descriptors.Clear();
+        }
+    }
+
+    public IReadOnlyList<SensorDescriptor> Discover() => _descriptors;
+
+    public float? Read(string sensorId) =>
+        _values.TryGetValue(sensorId, out var value) ? value : null;
+
+    public void Dispose()
+    {
+    }
+
+    /// <summary>Turns "ACPI\ThermalZone\CPUZ_0" into "CPUZ_0".</summary>
+    private static string ShortName(string instanceName)
+    {
+        var lastSeparator = instanceName.LastIndexOf('\\');
+        return lastSeparator >= 0 && lastSeparator < instanceName.Length - 1
+            ? instanceName[(lastSeparator + 1)..]
+            : instanceName;
+    }
+}
+```
+
+- [ ] **Step 9: Run the ACPI tests**
+
+Run: `dotnet test --filter "FullyQualifiedName~AcpiThermalSensorSourceTests"`
+Expected: 1 passed, 2 skipped.
+
+- [ ] **Step 10: Write the failing tests for readability-aware defaults**
+
+Append to `AnalogHwMonitor.Tests/SensorDefaultsTests.cs`:
+
+```csharp
+    private static readonly SensorDescriptor[] HvciBlockedMachine =
+    {
+        new("/intelcpu/0/load/0",             "CPU Total",    "Intel Core i7-1355U", SensorKind.Load,        "%"),
+        new("/intelcpu/0/temperature/12",     "CPU Package",  "Intel Core i7-1355U", SensorKind.Temperature, "°C"),
+        new("/intelcpu/0/temperature/1",      "Core Average", "Intel Core i7-1355U", SensorKind.Temperature, "°C"),
+        new("/gpu-intel-integrated/x/load/7", "D3D 3D",       "Intel Iris Xe",       SensorKind.Load,        "%"),
+        new("/gpu-intel-integrated/x/load/8", "D3D Copy",     "Intel Iris Xe",       SensorKind.Load,        "%"),
+        new("/ram/load/0",                    "Memory",       "Total Memory",        SensorKind.Load,        "%"),
+        new("/acpi/thermalzone/CPUZ_0",       "CPUZ_0",       "ACPI Thermal Zone",   SensorKind.Temperature, "°C"),
+        new("/acpi/thermalzone/GFXZ_0",       "GFXZ_0",       "ACPI Thermal Zone",   SensorKind.Temperature, "°C"),
+        new("/acpi/thermalzone/PCHZ_0",       "PCHZ_0",       "ACPI Thermal Zone",   SensorKind.Temperature, "°C"),
+    };
+
+    /// <summary>On the blocked machine every CPU-package temperature reads null.</summary>
+    private static bool ReadableOnBlockedMachine(string id) =>
+        !id.StartsWith("/intelcpu/0/temperature", StringComparison.Ordinal);
+
+    [Fact]
+    public void AssignSensors_FindsIntelIntegratedGpuLoadByItsD3dName()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, HvciBlockedMachine, ReadableOnBlockedMachine);
+
+        Assert.Equal("/gpu-intel-integrated/x/load/7", config.Channels[1].SensorId);
+    }
+
+    [Fact]
+    public void AssignSensors_PrefersAReadableAcpiZoneOverADeadCpuPackageSensor()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, HvciBlockedMachine, ReadableOnBlockedMachine);
+
+        Assert.Equal("/acpi/thermalzone/CPUZ_0", config.Channels[3].SensorId);
+        Assert.Equal("/acpi/thermalzone/GFXZ_0", config.Channels[4].SensorId);
+    }
+
+    [Fact]
+    public void AssignSensors_StillPrefersTheVendorSensorWhenItIsReadable()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, HvciBlockedMachine, _ => true);
+
+        Assert.Equal("/intelcpu/0/temperature/12", config.Channels[3].SensorId);
+    }
+
+    [Fact]
+    public void AssignSensors_NeverPicksAnUnrelatedThermalZone()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, HvciBlockedMachine, ReadableOnBlockedMachine);
+
+        Assert.DoesNotContain("PCHZ_0", string.Join(",", config.Channels.Select(c => c.SensorId)));
+    }
+
+    [Fact]
+    public void AssignSensors_WithoutAReadabilityPredicateBehavesAsBefore()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, AmdMachine);
+
+        Assert.Equal("/amdcpu/0/temperature/0", config.Channels[3].SensorId);
+    }
+```
+
+- [ ] **Step 11: Extend `SensorDefaults`**
+
+Three changes to `AnalogHwMonitor.Core/SensorDefaults.cs`.
+
+First, a rule may now carry more than one preference hint, because the ACPI zones use
+`gfx` where the vendor GPU uses `gpu`. Change `Rule`'s hint from a single string to a
+string array, and change `Match` so a sensor qualifies when its identifier contains ANY
+of the rule's hints. The mandatory-hint behaviour is unchanged: a hint starting with `/`
+means no widening, and it stays that way for the memory rule.
+
+Second, the rules gain the new patterns. The ACPI names come last in each temperature
+rule, so a machine whose vendor sensor works still prefers it:
+
+```csharp
+    private static readonly Rule[] Rules =
+    {
+        new(SensorKind.Load,        new[] { "CPU Total", "CPU" },                                   new[] { "cpu" }),
+        new(SensorKind.Load,        new[] { "GPU Core", "D3D 3D", "GPU" },                          new[] { "gpu" },
+            Exclude: new[] { "Memory" }),
+        new(SensorKind.Load,        new[] { "Memory" },                                             new[] { "/ram" }),
+        new(SensorKind.Temperature, new[] { "CPU Package", "Tctl", "Core Average", "CPUZ", "CPU" }, new[] { "cpu" }),
+        new(SensorKind.Temperature, new[] { "GPU Core", "GFXZ", "GPU" },                            new[] { "gpu", "gfx" },
+            Exclude: new[] { "Memory" }),
+    };
+```
+
+Third, `AssignSensors` takes the predicate and tries readable candidates first:
+
+```csharp
+    public static void AssignSensors(
+        AppConfig config,
+        IReadOnlyList<SensorDescriptor> sensors,
+        Func<string, bool>? isReadable = null)
+    {
+        for (var i = 0; i < config.Channels.Count && i < Rules.Length; i++)
+        {
+            if (!string.IsNullOrEmpty(config.Channels[i].SensorId))
+            {
+                continue;
+            }
+
+            // A sensor that exists but never returns a value is worse than none: it parks
+            // a needle at zero and looks like a working channel reading nothing.
+            var readable = isReadable is null
+                ? sensors
+                : sensors.Where(s => isReadable(s.Id)).ToList();
+
+            config.Channels[i].SensorId =
+                (Match(readable, Rules[i]) ?? Match(sensors, Rules[i]))?.Id;
+        }
+    }
+```
+
+- [ ] **Step 12: Run the sensor-defaults tests**
+
+Run: `dotnet test --filter "FullyQualifiedName~SensorDefaultsTests"`
+Expected: PASS — the seven existing tests plus the five new ones.
+
+- [ ] **Step 13: Compose both sources in the application**
+
+In `AnalogHwMonitor.App/Program.cs`, build the sensor source as a
+`CompositeSensorSource` over `LibreHardwareSensorSource` and `AcpiThermalSensorSource`,
+then, after the first `Refresh()`, pass `id => sensors.Read(id) is not null` as the
+readability predicate to `SensorDefaults.AssignSensors`.
+
+Keep the existing behaviour: the friendly message box when the hardware monitor cannot be
+opened at all, saving the config only when a channel had no sensor assigned, and disposal
+flowing through `MonitorService`. Note the composite swallows a failing source, so the
+message box now only appears if construction itself throws.
+
+- [ ] **Step 14: Build and run the whole suite**
+
+Run: `dotnet build` then `dotnet test`
+Expected: build clean; suite green, with the ACPI hardware tests skipped.
+
+- [ ] **Step 15: Commit**
+
+```bash
+git add AnalogHwMonitor.Core AnalogHwMonitor.App/Program.cs AnalogHwMonitor.Tests
+git commit -m "feat: read ACPI thermal zones and prefer readable sensors by default"
+```
+
+- [ ] **Step 16: Owner verification (deferred)**
+
+On the target machine, in an elevated shell: delete `config.json`, start the application,
+and confirm all five channels get assigned — CPU load, `D3D 3D`, memory, `CPUZ_0`,
+`GFXZ_0` — and that all five needles move.
+
+---
+
+### Task 14: Application icon
+
+**Files:**
+- Create: `tools/IconGenerator/IconGenerator.csproj`
+- Create: `tools/IconGenerator/Program.cs`
+- Create: `AnalogHwMonitor.App/appicon.ico` (generated, committed)
+- Create: `AnalogHwMonitor.App/appicon-warning.ico` (generated, committed)
+- Create: `AnalogHwMonitor.App/AppIcons.cs`
+- Modify: `AnalogHwMonitor.App/AnalogHwMonitor.App.csproj`
+- Modify: `AnalogHwMonitor.App/TrayApplicationContext.cs`
+- Modify: `AnalogHwMonitor.App/SettingsForm.cs`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: nothing from the application; the generator is standalone.
+- Produces: `static class AppIcons` in namespace `AnalogHwMonitor.App`, exposing
+  `static Icon Normal` and `static Icon Warning`, each loaded once from an embedded
+  resource and cached for the process lifetime.
+
+**Why a generator rather than a downloaded file.** No licence to track, no attribution to
+carry, and the shape can be regenerated at any size. Committing the generator keeps the
+icon reproducible instead of an opaque binary nobody can regenerate.
+
+**The design.** A round dial: dark face, light bezel, a 240-degree arc of scale with five
+tick marks, and a needle resting at about 70 percent of scale. The warning variant is the
+same dial with an amber dot in the lower right. Both must stay legible at 16 px, which
+rules out text, sub-pixel outlines, and low contrast between needle and face.
+
+- [ ] **Step 1: Create the generator project**
+
+Create `tools/IconGenerator/IconGenerator.csproj`:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>icongen</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Drawing.Common" Version="8.0.8" />
+  </ItemGroup>
+
+</Project>
+```
+
+This project is deliberately NOT added to `AnalogHwMonitor.sln`. It runs by hand when the
+icon needs regenerating and must never take part in the application's build.
+
+- [ ] **Step 2: Write the generator**
+
+Create `tools/IconGenerator/Program.cs`. It takes two output paths as arguments and
+writes the normal and warning icons. Requirements it must satisfy:
+
+- Render at 16, 32, 48, 64, 128 and 256 pixels, and pack all six into one `.ico`.
+- Derive every dimension from the bitmap size, so the dial holds its proportions at 16 px.
+- Draw with `SmoothingMode.AntiAlias` on a transparent background.
+- Write the ICO container by hand: a 6-byte `ICONDIR` (`reserved=0`, `type=1`,
+  `count=6`), then one 16-byte `ICONDIRENTRY` per image, then the image payloads. Store
+  each image as PNG, and write `0` in the entry's width and height bytes for the 256 px
+  image, as the format requires. `Icon.Save` cannot produce a multi-size file, which is
+  why this is written out by hand.
+- The warning variant draws the same dial, then an amber filled circle with a dark outline
+  in the lower-right quadrant, sized to stay visible at 16 px.
+
+- [ ] **Step 3: Generate both icons**
+
+```powershell
+dotnet run --project tools\IconGenerator -- AnalogHwMonitor.App\appicon.ico AnalogHwMonitor.App\appicon-warning.ico
+```
+
+- [ ] **Step 4: Verify they really are multi-size icons**
+
+```powershell
+$bytes = [System.IO.File]::ReadAllBytes("AnalogHwMonitor.App\appicon.ico")
+"reserved=$([BitConverter]::ToUInt16($bytes,0)) type=$([BitConverter]::ToUInt16($bytes,2)) images=$([BitConverter]::ToUInt16($bytes,4))"
+```
+
+Expected: `reserved=0 type=1 images=6`. Repeat for the warning icon.
+
+- [ ] **Step 5: Wire the icons into the application**
+
+In `AnalogHwMonitor.App.csproj` set `<ApplicationIcon>appicon.ico</ApplicationIcon>` and
+embed both files as resources.
+
+Create `AnalogHwMonitor.App/AppIcons.cs` exposing `Normal` and `Warning`, each read once
+from its embedded stream and cached in a static field. These are process-wide singletons;
+nothing disposes them.
+
+Replace `SystemIcons.Application` and `SystemIcons.Warning` in `TrayApplicationContext`
+with `AppIcons.Normal` and `AppIcons.Warning`, and set `SettingsForm.Icon` to
+`AppIcons.Normal`.
+
+- [ ] **Step 6: Build and run the suite**
+
+Run: `dotnet build` then `dotnet test`
+Expected: build clean, suite unchanged and green.
+
+- [ ] **Step 7: Update the README**
+
+Under project layout, note that `tools/IconGenerator` draws the committed icons and give
+the one-line command to regenerate them.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add tools AnalogHwMonitor.App README.md
+git commit -m "feat: draw and wire the analog dial application icon"
+```
+
+- [ ] **Step 9: Owner verification (deferred)**
+
+Start the application and confirm the dial appears in the system tray, on the settings
+window, and on the executable in Explorer, and that pulling the USB cable swaps the tray
+icon for the warning variant.
