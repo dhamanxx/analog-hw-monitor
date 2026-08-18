@@ -20,6 +20,8 @@ public sealed class FakeSerialPort : ISerialPort
 
     public Exception? ThrowOnOpen { get; set; }
 
+    public Exception? ThrowOnDispose { get; set; }
+
     public void Open()
     {
         if (ThrowOnOpen is not null)
@@ -45,6 +47,11 @@ public sealed class FakeSerialPort : ISerialPort
 
     public void Dispose()
     {
+        if (ThrowOnDispose is not null)
+        {
+            throw ThrowOnDispose;
+        }
+
         IsOpen = false;
         Disposed = true;
     }

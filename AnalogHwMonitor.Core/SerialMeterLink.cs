@@ -82,7 +82,14 @@ public sealed class SerialMeterLink : IMeterLink
         }
         catch (Exception ex)
         {
-            port?.Dispose();
+            try
+            {
+                port?.Dispose();
+            }
+            catch (Exception)
+            {
+            }
+
             LastError = $"{PortName}: {ex.Message}";
             _log.Write(LastError);
             return false;
@@ -120,8 +127,17 @@ public sealed class SerialMeterLink : IMeterLink
 
     private void Disconnect()
     {
-        _port?.Dispose();
-        _port = null;
+        try
+        {
+            _port?.Dispose();
+        }
+        catch (Exception)
+        {
+        }
+        finally
+        {
+            _port = null;
+        }
     }
 
     public void Dispose() => Disconnect();

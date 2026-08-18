@@ -108,4 +108,35 @@ public class SerialMeterLinkTests
 
         Assert.Equal(2, factory.CreatedPortNames.Count);   // ticks 1 and 6
     }
+
+    [Fact]
+    public void Send_DoesNotThrowWhenTheFailedPortAlsoThrowsOnDispose()
+    {
+        var factory = FactoryWith("COM3", () => new FakeSerialPort("AHM1")
+        {
+            ThrowOnWrite = new IOException("The device is not connected."),
+            ThrowOnDispose = new InvalidOperationException("The port handle is invalid."),
+        });
+        using var link = new SerialMeterLink(factory, "COM3", NullLog.Instance);
+
+        var exception = Record.Exception(() => link.Send("V:1,2,3,4,5\n"));
+
+        Assert.Null(exception);
+        Assert.False(link.IsConnected);
+    }
+
+    [Fact]
+    public void PortName_DoesNotThrowWhenTheCurrentPortFailsToDispose()
+    {
+        var factory = FactoryWith("COM3", () => new FakeSerialPort("AHM1")
+        {
+            ThrowOnDispose = new InvalidOperationException("The port handle is invalid."),
+        });
+        using var link = new SerialMeterLink(factory, "COM3", NullLog.Instance);
+        link.TryConnect();
+
+        var exception = Record.Exception(() => link.PortName = "COM4");
+
+        Assert.Null(exception);
+    }
 }
