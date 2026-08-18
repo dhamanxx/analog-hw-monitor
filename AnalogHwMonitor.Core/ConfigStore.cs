@@ -27,34 +27,76 @@ public sealed class ConfigStore
 
     public string BackupPath => Path + ".bak";
 
+    /// <summary>
+    /// Loads the configuration. Never throws: any missing file, unparseable JSON,
+    /// structurally invalid content, or filesystem failure (including failures while
+    /// attempting to back up or rewrite the file) is handled internally, falling back to
+    /// an in-memory default configuration rather than letting the application fail to start.
+    /// </summary>
     public ConfigLoadResult Load()
     {
         if (!File.Exists(Path))
         {
             var fresh = AppConfig.CreateDefault();
-            Save(fresh);
+            TrySave(fresh);
             return new ConfigLoadResult(fresh, ConfigLoadOutcome.CreatedDefault);
         }
 
         try
         {
-            var config = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(Path), Options)
-                         ?? throw new InvalidDataException("config.json contains null.");
-
-            if (config.Channels.Count != FrameCodec.ChannelCount)
+            var config = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(Path), Options);
+            if (IsValid(config))
             {
-                throw new InvalidDataException(
-                    $"config.json must contain exactly {FrameCodec.ChannelCount} channels.");
+                return new ConfigLoadResult(config!, ConfigLoadOutcome.Loaded);
             }
-
-            return new ConfigLoadResult(config, ConfigLoadOutcome.Loaded);
         }
-        catch (Exception ex) when (ex is JsonException or InvalidDataException)
+        catch
+        {
+            // Any failure reading or parsing the file (malformed JSON, locked file,
+            // permission error, ...) is treated as a corrupt config below.
+        }
+
+        TryBackup();
+        var defaults = AppConfig.CreateDefault();
+        TrySave(defaults);
+        return new ConfigLoadResult(defaults, ConfigLoadOutcome.RecoveredFromCorrupt);
+    }
+
+    /// <summary>A structurally sound config: non-null, with exactly the expected
+    /// number of non-null channels.</summary>
+    private static bool IsValid(AppConfig? config) =>
+        config is not null
+        && config.Channels is not null
+        && config.Channels.Count == FrameCodec.ChannelCount
+        && config.Channels.All(c => c is not null);
+
+    /// <summary>Best-effort backup of the corrupt file; swallows failures so that
+    /// recovery never throws.</summary>
+    private void TryBackup()
+    {
+        try
         {
             File.Move(Path, BackupPath, overwrite: true);
-            var fresh = AppConfig.CreateDefault();
-            Save(fresh);
-            return new ConfigLoadResult(fresh, ConfigLoadOutcome.RecoveredFromCorrupt);
+        }
+        catch
+        {
+            // Backing up the corrupt file is best-effort; recovery must still
+            // succeed (in memory) even if this fails, e.g. because the file is
+            // locked or read-only.
+        }
+    }
+
+    /// <summary>Best-effort write; swallows failures so that recovery never throws.</summary>
+    private void TrySave(AppConfig config)
+    {
+        try
+        {
+            Save(config);
+        }
+        catch
+        {
+            // Writing config.json is best-effort during recovery; the caller
+            // still gets a usable in-memory configuration even if this fails.
         }
     }
 

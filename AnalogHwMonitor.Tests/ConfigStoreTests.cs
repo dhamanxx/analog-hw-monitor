@@ -101,4 +101,41 @@ public class ConfigStoreTests : IDisposable
         Assert.Equal(ConfigLoadOutcome.RecoveredFromCorrupt, result.Outcome);
         Assert.Equal(FrameCodec.ChannelCount, result.Config.Channels.Count);
     }
+
+    [Fact]
+    public void Load_TreatsANullChannelsListAsCorrupt()
+    {
+        File.WriteAllText(ConfigPath, "{ \"comPort\": \"COM1\", \"channels\": null }");
+        var store = new ConfigStore(ConfigPath);
+
+        var result = store.Load();
+
+        Assert.Equal(ConfigLoadOutcome.RecoveredFromCorrupt, result.Outcome);
+        Assert.Equal(FrameCodec.ChannelCount, result.Config.Channels.Count);
+    }
+
+    [Fact]
+    public void Load_TreatsANullChannelElementAsCorrupt()
+    {
+        File.WriteAllText(ConfigPath, "{ \"channels\": [null, null, null, null, null] }");
+        var store = new ConfigStore(ConfigPath);
+
+        var result = store.Load();
+
+        Assert.Equal(ConfigLoadOutcome.RecoveredFromCorrupt, result.Outcome);
+        Assert.Equal(FrameCodec.ChannelCount, result.Config.Channels.Count);
+    }
+
+    [Fact]
+    public void Load_OverwritesAPreExistingBackupFile()
+    {
+        File.WriteAllText(ConfigPath + ".bak", "stale backup content");
+        File.WriteAllText(ConfigPath, "{ this is not json");
+        var store = new ConfigStore(ConfigPath);
+
+        var result = store.Load();
+
+        Assert.Equal(ConfigLoadOutcome.RecoveredFromCorrupt, result.Outcome);
+        Assert.Equal("{ this is not json", File.ReadAllText(ConfigPath + ".bak"));
+    }
 }
