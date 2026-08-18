@@ -16,6 +16,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _icon;
     private readonly System.Windows.Forms.Timer _timer;
     private SettingsForm? _settings;
+    private bool _tickFailureReported;
 
     public TrayApplicationContext(
         MonitorService monitor,
@@ -62,7 +63,32 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void OnTick()
     {
-        _monitor.Tick();
+        // MonitorService.Tick() reaches into the LibreHardwareMonitor driver and the
+        // serial link, both of which can fail at runtime, not only at startup. This
+        // handler fires every second for the life of the app, so one bad tick must
+        // not take the process down — the next tick gets another chance.
+        try
+        {
+            _monitor.Tick();
+        }
+        catch (Exception ex)
+        {
+            if (!_tickFailureReported)
+            {
+                _log.Write($"Tick failed: {ex.Message}");
+                _tickFailureReported = true;
+            }
+
+            _icon.Icon = SystemIcons.Warning;
+            _icon.Text = Truncate($"Analog Hardware Monitor — tick failed: {ex.Message}");
+            return;
+        }
+
+        if (_tickFailureReported)
+        {
+            _log.Write("Tick recovered.");
+            _tickFailureReported = false;
+        }
 
         // A warning overlay plus the reason in the tooltip: the needles say the
         // link is dead, the tray says why.

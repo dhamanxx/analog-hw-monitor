@@ -42,7 +42,17 @@ internal static class Program
         SensorDefaults.AssignSensors(config, sensors.Discover());
         if (hadUnassignedChannels)
         {
-            store.Save(config);
+            // Saving the auto-detected defaults is a convenience, not a precondition
+            // for running: a failed write here (e.g. a read-only install directory)
+            // must not crash an app that is otherwise fully usable.
+            try
+            {
+                store.Save(config);
+            }
+            catch (Exception ex)
+            {
+                log.Write($"Could not save the auto-detected configuration: {ex.Message}");
+            }
         }
 
         var link = new SerialMeterLink(new SerialPortFactory(), config.ComPort, log);
