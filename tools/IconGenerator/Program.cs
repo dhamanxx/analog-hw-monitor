@@ -67,16 +67,7 @@ internal static class Program
     /// measurement below is a fraction of <paramref name="size"/>, never a
     /// literal pixel count, which is what keeps the same drawing code legible
     /// from a 16px tray icon up to a 256px thumbnail: the proportions of
-    /// bezel, face and needle stay identical, only the scale changes.
-    ///
-    /// Revision note (fix round 1): the scale arc and tick marks that used to
-    /// sit between bezel and needle are gone. At 16px they did not read as a
-    /// scale — they merged into one pale blur against the bezel and drowned
-    /// the needle out. The shape is simplified at every size, not just the
-    /// small ones, so there is one consistent mark instead of a detailed
-    /// large icon and a separately-tuned small one: a heavy two-tone bezel
-    /// ring, a dominant needle, and a small hub. See the report for the
-    /// before/after description of what this looks like at 16px.
+    /// bezel, face, ticks and needle stay identical, only the scale changes.
     /// </summary>
     private static Bitmap DrawDial(int size, bool warning)
     {
@@ -94,50 +85,58 @@ internal static class Program
         // being clipped by the bitmap bounds at small sizes.
         var margin = s * 0.03f;
         var outerRadius = half - margin;
-
-        // A heavier bezel ring than before: the silhouette now has to carry
-        // the whole "this is a physical meter" read by itself, with no scale
-        // or ticks left to reinforce it.
-        var bezelThickness = Math.Max(1.6f, s * 0.16f);
+        var bezelThickness = Math.Max(1f, s * 0.09f);
         var faceRadius = outerRadius - bezelThickness;
 
-        // Bezel and face separate by a strong light/dark step rather than by
-        // fine detail: a light bezel, a near-black face, and a dark contour
-        // stroke right at the outer edge so the silhouette holds up against
-        // both light and dark backgrounds.
-        var bezelColor = Color.FromArgb(255, 235, 237, 241);
-        var contourColor = Color.FromArgb(255, 70, 73, 80);
-        var faceColor = Color.FromArgb(255, 16, 18, 24);
-        var needleColor = Color.FromArgb(255, 230, 50, 40);
-        var hubColor = Color.FromArgb(255, 238, 239, 243);
+        // Light bezel, dark face: the two rings that read as "a physical
+        // meter" even when everything inside them is a blur at 16px.
+        var bezelColor = Color.FromArgb(255, 232, 234, 238);
+        var bezelRing = Color.FromArgb(255, 118, 122, 130);
+        var faceColor = Color.FromArgb(255, 22, 24, 30);
+        var scaleColor = Color.FromArgb(255, 206, 211, 219);
+        var needleColor = Color.FromArgb(255, 226, 54, 44);
+        var hubColor = Color.FromArgb(255, 236, 237, 241);
 
-        var contourWidth = Math.Max(1f, s * 0.035f);
         FillCircle(g, center, outerRadius, bezelColor);
-        StrokeCircle(g, center, outerRadius - contourWidth / 2f, contourColor, contourWidth);
+        StrokeCircle(g, center, outerRadius - Math.Max(0.5f, s * 0.01f), bezelRing, Math.Max(1f, s * 0.02f));
         FillCircle(g, center, faceRadius, faceColor);
 
-        // The needle's resting angle: 150 degrees is the classic panel-meter
-        // "zero" position (lower-left, in GDI+'s 0-at-3-o'clock,
-        // clockwise-positive convention) and it travels 240 degrees to
-        // "full scale" at the lower-right. Resting at 70% of that sweep — off
-        // to one side rather than dead centered — is what reads as an
-        // instrument mid-reading instead of a clock or a logo. The scale
-        // itself is no longer drawn, but the angle math still describes where
-        // the needle sits relative to it.
+        // A 240-degree scale with a 120-degree gap centered at the bottom —
+        // the classic panel-meter layout — swept clockwise in GDI+'s
+        // 0-degrees-at-3-o'clock, clockwise-positive coordinate system.
         const float startAngle = 150f;
         const float sweepAngle = 240f;
-        var needleAngle = startAngle + sweepAngle * 0.70f;
 
-        // The needle is now the dominant feature: it reaches most of the way
-        // to the face's edge and is noticeably thick, so a handful of pixels
-        // at 16px still read as "a needle pointing somewhere" rather than a
-        // stray red speck. The hub shrinks to the smallest size that still
-        // reads as a pivot rather than competing with the needle for
-        // attention.
-        var needleLength = faceRadius * 0.92f;
-        var needleHalfWidth = Math.Max(1.4f, s * 0.12f);
-        var hubRadius = Math.Max(1f, s * 0.07f);
-        DrawNeedle(g, center, needleAngle, needleLength, needleHalfWidth, hubRadius * 0.6f, needleColor);
+        var scaleRadius = faceRadius * 0.88f;
+        var arcWidth = Math.Max(1f, s * 0.045f);
+        using (var arcPen = new Pen(scaleColor, arcWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            var bounds = new RectangleF(center.X - scaleRadius, center.Y - scaleRadius, scaleRadius * 2f, scaleRadius * 2f);
+            g.DrawArc(arcPen, bounds, startAngle, sweepAngle);
+        }
+
+        // Five tick marks spanning the full sweep, including both endpoints.
+        var tickInner = faceRadius * 0.74f;
+        var tickOuter = faceRadius * 0.96f;
+        var tickWidth = Math.Max(1f, s * 0.05f);
+        using (var tickPen = new Pen(scaleColor, tickWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            const int tickCount = 5;
+            for (var i = 0; i < tickCount; i++)
+            {
+                var t = i / (float)(tickCount - 1);
+                var angle = startAngle + sweepAngle * t;
+                g.DrawLine(tickPen, PointOnCircle(center, tickInner, angle), PointOnCircle(center, tickOuter, angle));
+            }
+        }
+
+        // The needle rests at 70% of the scale: a live-but-not-maxed reading,
+        // which is a more natural resting pose for an icon than dead zero.
+        var needleAngle = startAngle + sweepAngle * 0.70f;
+        var needleLength = faceRadius * 0.82f;
+        var needleHalfWidth = Math.Max(0.6f, s * 0.06f);
+        var hubRadius = Math.Max(1.2f, s * 0.10f);
+        DrawNeedle(g, center, needleAngle, needleLength, needleHalfWidth, hubRadius * 0.7f, needleColor);
         FillCircle(g, center, hubRadius, hubColor);
 
         if (warning)
@@ -182,6 +181,12 @@ internal static class Program
 
         using var brush = new SolidBrush(color);
         g.FillPolygon(brush, new[] { left, tip, right });
+    }
+
+    private static PointF PointOnCircle(PointF center, float radius, float angleDegrees)
+    {
+        var radians = angleDegrees * MathF.PI / 180f;
+        return new PointF(center.X + radius * MathF.Cos(radians), center.Y + radius * MathF.Sin(radians));
     }
 
     private static void FillCircle(Graphics g, PointF center, float radius, Color color)
