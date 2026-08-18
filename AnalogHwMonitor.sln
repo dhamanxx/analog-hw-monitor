@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AnalogHwMonitor.Core", "AnalogHwMonitor.Core\AnalogHwMonitor.Core.csproj", "{C33171F7-E95B-4131-A8DF-6AC3A7715C22}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AnalogHwMonitor.Tests", "AnalogHwMonitor.Tests\AnalogHwMonitor.Tests.csproj", "{B99067A6-6E4C-473B-B6F7-1DE2DC102E1A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C33171F7-E95B-4131-A8DF-6AC3A7715C22}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C33171F7-E95B-4131-A8DF-6AC3A7715C22}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C33171F7-E95B-4131-A8DF-6AC3A7715C22}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C33171F7-E95B-4131-A8DF-6AC3A7715C22}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B99067A6-6E4C-473B-B6F7-1DE2DC102E1A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B99067A6-6E4C-473B-B6F7-1DE2DC102E1A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B99067A6-6E4C-473B-B6F7-1DE2DC102E1A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B99067A6-6E4C-473B-B6F7-1DE2DC102E1A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
