@@ -31,15 +31,36 @@ public sealed class FileLog : IAppLog
     {
         lock (_gate)
         {
-            var info = new FileInfo(Path);
-            if (info.Exists && info.Length >= _maxBytes)
+            try
             {
-                File.Move(Path, OldPath, overwrite: true);
+                var info = new FileInfo(Path);
+                if (info.Exists && info.Length >= _maxBytes)
+                {
+                    try
+                    {
+                        File.Move(Path, OldPath, overwrite: true);
+                    }
+                    catch
+                    {
+                        // Rotation failed; continue to attempt append anyway
+                    }
+                }
+            }
+            catch
+            {
+                // FileInfo or other operation failed; continue to attempt append anyway
             }
 
-            File.AppendAllText(
-                Path,
-                $"{_clock():yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}");
+            try
+            {
+                File.AppendAllText(
+                    Path,
+                    $"{_clock():yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}");
+            }
+            catch
+            {
+                // Append failed; silently drop the line
+            }
         }
     }
 }

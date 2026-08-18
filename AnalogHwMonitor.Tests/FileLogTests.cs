@@ -62,4 +62,22 @@ public class FileLogTests : IDisposable
 
         Assert.DoesNotContain("stale", File.ReadAllText(log.OldPath));
     }
+
+    [Fact]
+    public void Write_DoesNotThrowWhenFileCannotBeWritten()
+    {
+        File.WriteAllText(LogPath, "initial");
+        var log = new FileLog(LogPath, clock: FixedClock);
+
+        FileStream stream = new(LogPath, FileMode.Open, FileAccess.Read, FileShare.None);
+        try
+        {
+            // File is locked; Write should not throw despite failing to append
+            log.Write("should be dropped");
+        }
+        finally
+        {
+            stream.Dispose();
+        }
+    }
 }
