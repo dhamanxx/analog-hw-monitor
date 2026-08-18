@@ -139,4 +139,93 @@ public class SerialMeterLinkTests
 
         Assert.Null(exception);
     }
+
+    [Fact]
+    public void TryConnect_ReportsARepeatedIdenticalFailureOnlyOnce()
+    {
+        var factory = FactoryWith("COM3", () => new FakeSerialPort
+        {
+            ThrowOnOpen = new UnauthorizedAccessException("Access to the port is denied."),
+        });
+        var log = new RecordingLog();
+        using var link = new SerialMeterLink(factory, "COM3", log);
+
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            link.TryConnect();
+        }
+
+        Assert.Single(log.Lines);
+        Assert.Contains("Access to the port is denied.", log.Lines[0]);
+    }
+
+    [Fact]
+    public void TryConnect_ReportsARepeatedBannerFailureOnlyOnce()
+    {
+        var factory = FactoryWith("COM3", () => new FakeSerialPort("PRINTER READY"));
+        var log = new RecordingLog();
+        using var link = new SerialMeterLink(factory, "COM3", log);
+
+        link.TryConnect();
+        link.TryConnect();
+
+        Assert.Single(log.Lines);
+        Assert.Contains("AHM1", log.Lines[0]);
+    }
+
+    [Fact]
+    public void TryConnect_ReportsTheFailureAgainWhenItChanges()
+    {
+        Exception? fault = new UnauthorizedAccessException("Access to the port is denied.");
+        var factory = FactoryWith("COM3", () => new FakeSerialPort { ThrowOnOpen = fault });
+        var log = new RecordingLog();
+        using var link = new SerialMeterLink(factory, "COM3", log);
+
+        link.TryConnect();
+        link.TryConnect();
+        fault = new IOException("The device is not connected.");
+        link.TryConnect();
+
+        Assert.Equal(2, log.Lines.Count);
+        Assert.Contains("The device is not connected.", log.Lines[1]);
+    }
+
+    /// <summary>
+    /// A cable that is plugged back in and pulled out again is news both times, so the
+    /// successful connection re-arms the latch. The "Connected to ..." line itself is
+    /// unconditional and stays.
+    /// </summary>
+    [Fact]
+    public void TryConnect_ReportsTheSameFailureAgainAfterTheLinkRecovers()
+    {
+        Exception? fault = new UnauthorizedAccessException("Access to the port is denied.");
+        var factory = FactoryWith("COM3", () => new FakeSerialPort("AHM1") { ThrowOnOpen = fault });
+        var log = new RecordingLog();
+        using var link = new SerialMeterLink(factory, "COM3", log);
+
+        link.TryConnect();
+        link.TryConnect();
+
+        fault = null;
+        Assert.True(link.TryConnect());
+
+        fault = new UnauthorizedAccessException("Access to the port is denied.");
+        link.TryConnect();
+
+        Assert.Equal(3, log.Lines.Count);
+        Assert.Equal("Connected to COM3.", log.Lines[1]);
+        Assert.Contains("Access to the port is denied.", log.Lines[2]);
+    }
+
+    [Fact]
+    public void TryConnect_StillLogsEverySuccessfulConnection()
+    {
+        var factory = FactoryWith("COM3", () => new FakeSerialPort("AHM1"));
+        var log = new RecordingLog();
+        using var link = new SerialMeterLink(factory, "COM3", log);
+
+        Assert.True(link.TryConnect());
+
+        Assert.Equal(new[] { "Connected to COM3." }, log.Lines);
+    }
 }

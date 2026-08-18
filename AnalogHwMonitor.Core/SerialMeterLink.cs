@@ -17,6 +17,7 @@ public sealed class SerialMeterLink : IMeterLink
     private readonly IAppLog _log;
     private ISerialPort? _port;
     private int _ticksSinceAttempt = ReconnectEveryTicks - 1;
+    private string? _reportedError;
 
     public SerialMeterLink(ISerialPortFactory factory, string? portName, IAppLog log)
     {
@@ -37,6 +38,10 @@ public sealed class SerialMeterLink : IMeterLink
             }
 
             _portName = value;
+
+            // A new port is a new story: whatever was already reported about the old
+            // one must not silence the first failure of this one.
+            _reportedError = null;
             Disconnect();
         }
     }
@@ -70,14 +75,14 @@ public sealed class SerialMeterLink : IMeterLink
                 {
                     _port = port;
                     LastError = null;
+                    _reportedError = null;
                     _log.Write($"Connected to {PortName}.");
                     return true;
                 }
             }
 
             port.Dispose();
-            LastError = $"{PortName} did not identify itself as {FrameCodec.Banner}.";
-            _log.Write(LastError);
+            Report($"{PortName} did not identify itself as {FrameCodec.Banner}.");
             return false;
         }
         catch (Exception ex)
@@ -90,8 +95,7 @@ public sealed class SerialMeterLink : IMeterLink
             {
             }
 
-            LastError = $"{PortName}: {ex.Message}";
-            _log.Write(LastError);
+            Report($"{PortName}: {ex.Message}");
             return false;
         }
     }
@@ -119,10 +123,29 @@ public sealed class SerialMeterLink : IMeterLink
         }
         catch (Exception ex)
         {
-            LastError = $"{PortName}: {ex.Message}";
-            _log.Write(LastError);
+            Report($"{PortName}: {ex.Message}");
             Disconnect();
         }
+    }
+
+    /// <summary>
+    /// Records a failure and logs it only when it differs from the one already
+    /// reported. An unplugged USB cable fails the same way every five seconds
+    /// forever; logging each attempt filled log.txt at about a megabyte a day and
+    /// rotated the interesting history away. A changed failure, or a recovery (which
+    /// clears the latch and logs its own "Connected to ..." line), reports again.
+    /// </summary>
+    private void Report(string message)
+    {
+        LastError = message;
+
+        if (_reportedError == message)
+        {
+            return;
+        }
+
+        _log.Write(message);
+        _reportedError = message;
     }
 
     private void Disconnect()

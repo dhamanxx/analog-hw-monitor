@@ -12,22 +12,24 @@ namespace AnalogHwMonitor.Core;
 /// </summary>
 public sealed class CompositeSensorSource : ISensorSource
 {
+    private static readonly int OperationCount = Enum.GetValues<SourceOperation>().Length;
+
     private readonly IAppLog _log;
     private readonly ISensorSource[] _sources;
-    private readonly string?[] _lastFault;
+    private readonly string?[,] _lastFault;
 
     public CompositeSensorSource(IAppLog log, params ISensorSource[] sources)
     {
         _log = log;
         _sources = sources;
-        _lastFault = new string?[sources.Length];
+        _lastFault = new string?[sources.Length, OperationCount];
     }
 
     public void Refresh()
     {
         for (var i = 0; i < _sources.Length; i++)
         {
-            Try(i, source =>
+            Try(i, SourceOperation.Refresh, source =>
             {
                 source.Refresh();
                 return true;
@@ -40,7 +42,7 @@ public sealed class CompositeSensorSource : ISensorSource
         var all = new List<SensorDescriptor>();
         for (var i = 0; i < _sources.Length; i++)
         {
-            var discovered = Try(i, source => source.Discover());
+            var discovered = Try(i, SourceOperation.Discover, source => source.Discover());
             if (discovered is not null)
             {
                 all.AddRange(discovered);
@@ -54,7 +56,7 @@ public sealed class CompositeSensorSource : ISensorSource
     {
         for (var i = 0; i < _sources.Length; i++)
         {
-            var value = Try(i, source => source.Read(sensorId));
+            var value = Try(i, SourceOperation.Read, source => source.Read(sensorId));
             if (value is not null)
             {
                 return value;
@@ -68,7 +70,7 @@ public sealed class CompositeSensorSource : ISensorSource
     {
         for (var i = 0; i < _sources.Length; i++)
         {
-            Try(i, source =>
+            Try(i, SourceOperation.Dispose, source =>
             {
                 source.Dispose();
                 return true;
@@ -78,27 +80,46 @@ public sealed class CompositeSensorSource : ISensorSource
 
     /// <summary>
     /// Runs one source's operation, logging a fault only the first time it appears.
-    /// The latch remembers the last-reported failure message per source rather than
-    /// just whether one occurred, so an unchanged fault stays silent on every later
-    /// tick while a genuinely different failure on that same source is still logged.
+    /// The latch is keyed on the source, the operation, and the last-reported message
+    /// for that pair. Keying on the source alone was not enough: a single tick calls
+    /// Refresh() and then Read() on the same source, a persistently broken source
+    /// throws a different message from each, and a message-only latch therefore
+    /// alternated and logged both on every tick forever. With one slot per operation
+    /// an unchanged fault stays silent no matter how the calls interleave, while a
+    /// genuinely different failure of the same operation is still reported.
     /// </summary>
-    private T? Try<T>(int index, Func<ISensorSource, T> operation)
+    private T? Try<T>(int index, SourceOperation operation, Func<ISensorSource, T> work)
     {
         try
         {
-            var result = operation(_sources[index]);
-            _lastFault[index] = null;
+            var result = work(_sources[index]);
+            _lastFault[index, (int)operation] = null;
             return result;
         }
         catch (Exception ex)
         {
-            if (_lastFault[index] != ex.Message)
+            if (_lastFault[index, (int)operation] != ex.Message)
             {
-                _log.Write($"Sensor source {_sources[index].GetType().Name} failed: {ex.Message}");
-                _lastFault[index] = ex.Message;
+                _log.Write(
+                    $"Sensor source {_sources[index].GetType().Name} failed on {operation}: {ex.Message}");
+                _lastFault[index, (int)operation] = ex.Message;
             }
 
             return default;
         }
+    }
+
+    /// <summary>
+    /// Which call into a source failed. One tick calls <see cref="Refresh"/> once and
+    /// <see cref="Read"/> up to five times on the same source, and a broken source
+    /// rarely fails all of them with the same message, so the fault latch has to be
+    /// per operation as well as per source.
+    /// </summary>
+    private enum SourceOperation
+    {
+        Refresh,
+        Discover,
+        Read,
+        Dispose,
     }
 }

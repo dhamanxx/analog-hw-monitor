@@ -14,6 +14,11 @@ public static class SensorDefaults
         new(SensorKind.Load,        new[] { "CPU Total", "CPU" },                                   new[] { "cpu" }),
         new(SensorKind.Load,        new[] { "GPU Core", "D3D 3D", "GPU" },                          new[] { "gpu" },
             Exclude: new[] { "Memory" }),
+        // "physical-memory" matches no identifier any LibreHardwareMonitor version emits.
+        // It is here only so a mandatory hint ("/ram", mandatory because it starts with
+        // "/") paired with a plain preference hint, mandatory not first, is exercised
+        // through the public API by SensorDefaultsTests. Do not rely on it, and do not
+        // delete it: removing it turns that regression test into a tautology.
         new(SensorKind.Load,        new[] { "Memory" },                                             new[] { "physical-memory", "/ram" }),
         new(SensorKind.Temperature, new[] { "CPU Package", "Tctl", "Core Average", "CPUZ", "CPU" }, new[] { "cpu" }),
         new(SensorKind.Temperature, new[] { "GPU Core", "GFXZ", "GPU" },                            new[] { "gpu", "gfx" },

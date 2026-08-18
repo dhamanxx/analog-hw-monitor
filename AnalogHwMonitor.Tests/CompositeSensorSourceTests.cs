@@ -94,4 +94,81 @@ public class CompositeSensorSourceTests
         Assert.True(a.Disposed);
         Assert.True(b.Disposed);
     }
+
+    /// <summary>
+    /// The shape of a real tick: MonitorService calls Refresh() once and then Read()
+    /// once per channel, all on the same source. A latch keyed only on the last message
+    /// per source alternated between the Refresh message and the Read message and
+    /// logged both on every tick — roughly two lines a second, which rotated
+    /// log.txt away in under two hours. Per source AND per operation, a persistent
+    /// fault costs one line each, forever.
+    /// </summary>
+    [Fact]
+    public void APersistentFaultLogsOncePerOperationNoMatterHowManyTicksRun()
+    {
+        var log = new RecordingLog();
+        var broken = new FaultySensorSource { RefreshFault = "refresh failed", ReadFault = "read failed" };
+        using var composite = new CompositeSensorSource(log, broken);
+
+        for (var tick = 0; tick < 10; tick++)
+        {
+            composite.Refresh();
+            for (var channel = 0; channel < FrameCodec.ChannelCount; channel++)
+            {
+                composite.Read($"sensor-{channel}");
+            }
+        }
+
+        Assert.Equal(2, log.Lines.Count);
+    }
+
+    [Fact]
+    public void AChangedFailureOnTheSameOperationIsStillReported()
+    {
+        var log = new RecordingLog();
+        var broken = new FaultySensorSource { RefreshFault = "the driver is gone" };
+        using var composite = new CompositeSensorSource(log, broken);
+
+        composite.Refresh();
+        composite.Refresh();
+        broken.RefreshFault = "the driver came back wrong";
+        composite.Refresh();
+
+        Assert.Equal(2, log.Lines.Count);
+        Assert.Contains("the driver came back wrong", log.Lines[1]);
+    }
+
+    [Fact]
+    public void TheSameFailureIsReportedAgainAfterTheOperationRecovers()
+    {
+        var log = new RecordingLog();
+        var broken = new FaultySensorSource { RefreshFault = "the driver is gone" };
+        using var composite = new CompositeSensorSource(log, broken);
+
+        composite.Refresh();
+        broken.RefreshFault = null;
+        composite.Refresh();
+        broken.RefreshFault = "the driver is gone";
+        composite.Refresh();
+
+        Assert.Equal(2, log.Lines.Count);
+    }
+
+    [Fact]
+    public void OneOperationRecoveringDoesNotUnlatchAnother()
+    {
+        var log = new RecordingLog();
+        var broken = new FaultySensorSource { RefreshFault = "refresh failed", ReadFault = "read failed" };
+        using var composite = new CompositeSensorSource(log, broken);
+
+        composite.Refresh();
+        composite.Read("sensor-0");
+
+        // Refresh starts working again; Read is still broken the same way it was.
+        broken.RefreshFault = null;
+        composite.Refresh();
+        composite.Read("sensor-0");
+
+        Assert.Equal(2, log.Lines.Count);
+    }
 }
