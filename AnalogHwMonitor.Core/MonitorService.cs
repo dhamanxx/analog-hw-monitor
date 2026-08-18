@@ -12,6 +12,7 @@ public sealed class MonitorService : IDisposable
     private readonly IAppLog _log;
     private readonly byte?[] _testPwm = new byte?[FrameCodec.ChannelCount];
     private readonly bool[] _missingReported = new bool[FrameCodec.ChannelCount];
+    private AppConfig _config = null!;
 
     public MonitorService(ISensorSource sensors, IMeterLink link, AppConfig config, IAppLog log)
     {
@@ -21,8 +22,29 @@ public sealed class MonitorService : IDisposable
         Config = config;
     }
 
-    /// <summary>Swapped wholesale when the settings window saves.</summary>
-    public AppConfig Config { get; set; }
+    /// <summary>Swapped wholesale when the settings window saves. Must be non-null and hold
+    /// exactly <see cref="FrameCodec.ChannelCount"/> channels — <see cref="Tick"/> relies on
+    /// that invariant without checking it.</summary>
+    public AppConfig Config
+    {
+        get => _config;
+        set
+        {
+            if (value is null)
+            {
+                throw new ArgumentException("Config cannot be null.", nameof(value));
+            }
+
+            if (value.Channels is null || value.Channels.Count != FrameCodec.ChannelCount)
+            {
+                throw new ArgumentException(
+                    $"Config must have exactly {FrameCodec.ChannelCount} channels, but had {value.Channels?.Count ?? 0}.",
+                    nameof(value));
+            }
+
+            _config = value;
+        }
+    }
 
     public event EventHandler<IReadOnlyList<ChannelReading>>? Updated;
 

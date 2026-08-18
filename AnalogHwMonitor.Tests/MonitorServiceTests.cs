@@ -146,4 +146,25 @@ public class MonitorServiceTests
         Assert.Equal(25, readings[0].Percent, 3);
         Assert.Equal(50, readings[3].Percent, 3);   // 60 °C on a 30-90 range
     }
+
+    [Fact]
+    public void Config_AssigningWrongChannelCountThrows()
+    {
+        using var service = new MonitorService(
+            SensorsAt(0, 0, 0, 0, 0), new FakeMeterLink(), ConfigWithSensors(), NullLog.Instance);
+        var badConfig = ConfigWithSensors();
+        badConfig.Channels.RemoveAt(0);
+
+        Assert.Throws<ArgumentException>(() => service.Config = badConfig);
+    }
+
+    [Fact]
+    public void Constructor_WithWrongChannelCountThrows()
+    {
+        var badConfig = ConfigWithSensors();
+        badConfig.Channels.RemoveAt(0);
+
+        Assert.Throws<ArgumentException>(() =>
+            new MonitorService(SensorsAt(0, 0, 0, 0, 0), new FakeMeterLink(), badConfig, NullLog.Instance));
+    }
 }
