@@ -94,6 +94,19 @@ public sealed class SettingsForm : Form
                 Hide();
             }
         };
+
+        // Any channel left pinned by the Test slider must be released the moment
+        // this window stops being visible — whether that's the X (via the
+        // FormClosing handler above calling Hide()), the Close button calling
+        // Hide() directly, or anything else that hides the form. Otherwise a
+        // needle stays parked at an arbitrary value with no UI left open to fix it.
+        VisibleChanged += (_, _) =>
+        {
+            if (!Visible)
+            {
+                StopAllTests();
+            }
+        };
     }
 
     private void RefreshPorts()
@@ -133,6 +146,7 @@ public sealed class SettingsForm : Form
         foreach (var (row, index) in _rows.Select((r, i) => (r, i)))
         {
             row.ApplyTo(_monitor.Config.Channels[index]);
+            row.StopTest();
             _monitor.SetTestPwm(index, null);
         }
 
@@ -144,6 +158,14 @@ public sealed class SettingsForm : Form
         _store.Save(_monitor.Config);
 
         _status.Text = $"Saved to {_store.Path}";
+    }
+
+    private void StopAllTests()
+    {
+        foreach (var row in _rows)
+        {
+            row.StopTest();
+        }
     }
 
     private void OnUpdated(object? sender, IReadOnlyList<ChannelReading> readings)

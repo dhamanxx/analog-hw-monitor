@@ -9,8 +9,8 @@ namespace AnalogHwMonitor.App;
 public sealed class ChannelRowControl : UserControl
 {
     private readonly ComboBox _sensor = new() { Width = 260, DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly NumericUpDown _min = new() { Width = 60, Minimum = -273, Maximum = 10000, DecimalPlaces = 0 };
-    private readonly NumericUpDown _max = new() { Width = 60, Minimum = -273, Maximum = 10000, DecimalPlaces = 0 };
+    private readonly NumericUpDown _min = new() { Width = 60, Minimum = -273, Maximum = 1_000_000_000, DecimalPlaces = 0 };
+    private readonly NumericUpDown _max = new() { Width = 60, Minimum = -273, Maximum = 1_000_000_000, DecimalPlaces = 0 };
     private readonly Label _value = new() { Width = 90, TextAlign = ContentAlignment.MiddleRight };
     private readonly Label _pwm = new() { Width = 45, TextAlign = ContentAlignment.MiddleRight };
     private readonly CheckBox _test = new() { Text = "Test", Width = 55 };
@@ -35,13 +35,26 @@ public sealed class ChannelRowControl : UserControl
 
         _sensor.DisplayMember = nameof(SensorDescriptor.Display);
         _sensor.SelectedIndex = 0;
+
+        var matched = false;
         for (var i = 0; i < sensors.Count; i++)
         {
             if (sensors[i].Id == channel.SensorId)
             {
                 _sensor.SelectedIndex = i + 1;
+                matched = true;
                 break;
             }
+        }
+
+        if (!matched && channel.SensorId is { } unavailableId)
+        {
+            // The saved sensor wasn't found by Discover() this time (unplugged
+            // device, driver hasn't enumerated it yet, ...). Keep it selectable
+            // and intact so an unrelated Save doesn't silently erase it.
+            var missing = new MissingSensor(unavailableId);
+            _sensor.Items.Add(missing);
+            _sensor.SelectedItem = missing;
         }
 
         _min.Value = (decimal)channel.Min;
@@ -107,12 +120,25 @@ public sealed class ChannelRowControl : UserControl
 
     public void ApplyTo(ChannelConfig channel)
     {
-        channel.SensorId = _sensor.SelectedItem as SensorDescriptor is { } descriptor ? descriptor.Id : null;
+        channel.SensorId = _sensor.SelectedItem switch
+        {
+            SensorDescriptor descriptor => descriptor.Id,
+            MissingSensor missing => missing.Id,
+            _ => null,
+        };
         channel.Min = (double)_min.Value;
         channel.Max = (double)_max.Value;
         channel.MinPwm = _minPwm;
         channel.MaxPwm = _maxPwm;
     }
+
+    /// <summary>
+    /// Returns this row to normal operation: unticks Test, which the existing
+    /// CheckedChanged handler uses to disable the slider and calibration buttons
+    /// and to raise <see cref="TestPwmChanged"/>(null) so the model releases the
+    /// channel too. Safe to call when the row is already out of test mode.
+    /// </summary>
+    public void StopTest() => _test.Checked = false;
 
     public void ShowReading(ChannelReading reading)
     {
@@ -124,4 +150,14 @@ public sealed class ChannelRowControl : UserControl
     }
 
     private void UpdateCalibrationLabel() => _calibration.Text = $"{_minPwm}–{_maxPwm}";
+
+    /// <summary>
+    /// Stands in for a saved <see cref="ChannelConfig.SensorId"/> that Discover()
+    /// didn't return this time, so ApplyTo can write it back unchanged instead of
+    /// treating the row as unassigned.
+    /// </summary>
+    private sealed record MissingSensor(string Id)
+    {
+        public string Display => $"{Id} (currently unavailable)";
+    }
 }
