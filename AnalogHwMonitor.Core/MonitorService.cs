@@ -82,11 +82,19 @@ public sealed class MonitorService : IDisposable
                 _missingReported[i] = false;
             }
 
-            var percent = missing ? 0 : ChannelMapper.ToPercent(value!.Value, channel.Min, channel.Max);
-
             // A missing sensor parks the needle below its calibrated zero, so a dead
             // channel never looks like a healthy idle one.
-            pwmValues[i] = missing ? (byte)0 : MeterCalibration.ToPwm(percent, channel.MinPwm, channel.MaxPwm);
+            double percent;
+            if (missing)
+            {
+                percent = 0;
+                pwmValues[i] = 0;
+            }
+            else
+            {
+                (percent, pwmValues[i]) = ChannelPipeline.Evaluate(
+                    value!.Value, channel.Min, channel.Max, channel.MinPwm, channel.MaxPwm);
+            }
 
             readings.Add(new ChannelReading(i, channel.Label, value, percent, pwmValues[i], missing, false));
         }

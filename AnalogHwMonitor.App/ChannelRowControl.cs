@@ -1,3 +1,4 @@
+using System.Globalization;
 using AnalogHwMonitor.Core;
 
 namespace AnalogHwMonitor.App;
@@ -15,9 +16,13 @@ public sealed class ChannelRowControl : UserControl
     private readonly Label _pwm = new() { Width = 45, TextAlign = ContentAlignment.MiddleRight };
     private readonly CheckBox _test = new() { Text = "Test", Width = 55 };
     private readonly TrackBar _slider = new() { Width = 150, Minimum = 0, Maximum = 255, TickFrequency = 32, Enabled = false };
+    private readonly TextBox _simValue = new() { Width = 55, Enabled = false };
+    private readonly Label _simUnit = new() { Width = 35, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Button _simApply = new() { Text = "Apply", Width = 55, Enabled = false };
     private readonly Button _saveMin = new() { Text = "Save as min", Width = 90, Enabled = false };
     private readonly Button _saveMax = new() { Text = "Save as max", Width = 90, Enabled = false };
     private readonly Label _calibration = new() { Width = 80, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label _simResult = new() { Width = 260, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
 
     private int _minPwm;
     private int _maxPwm;
@@ -60,12 +65,20 @@ public sealed class ChannelRowControl : UserControl
         _min.Value = (decimal)channel.Min;
         _max.Value = (decimal)channel.Max;
         UpdateCalibrationLabel();
+        UpdateSimUnit();
 
         _test.CheckedChanged += (_, _) =>
         {
             _slider.Enabled = _test.Checked;
             _saveMin.Enabled = _test.Checked;
             _saveMax.Enabled = _test.Checked;
+            _simValue.Enabled = _test.Checked;
+            _simApply.Enabled = _test.Checked;
+            if (!_test.Checked)
+            {
+                _simResult.Text = string.Empty;
+            }
+
             TestPwmChanged?.Invoke(this, _test.Checked ? (byte)_slider.Value : null);
         };
 
@@ -89,6 +102,10 @@ public sealed class ChannelRowControl : UserControl
             UpdateCalibrationLabel();
         };
 
+        _sensor.SelectedIndexChanged += (_, _) => UpdateSimUnit();
+
+        _simApply.Click += (_, _) => ApplySimulatedValue();
+
         var layout = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -106,9 +123,13 @@ public sealed class ChannelRowControl : UserControl
         layout.Controls.Add(_pwm);
         layout.Controls.Add(_test);
         layout.Controls.Add(_slider);
+        layout.Controls.Add(_simValue);
+        layout.Controls.Add(_simUnit);
+        layout.Controls.Add(_simApply);
         layout.Controls.Add(_saveMin);
         layout.Controls.Add(_saveMax);
         layout.Controls.Add(_calibration);
+        layout.Controls.Add(_simResult);
 
         Controls.Add(layout);
         Height = 40;
@@ -159,12 +180,58 @@ public sealed class ChannelRowControl : UserControl
     private string WithUnit(float value)
     {
         var text = value.ToString("0.0");
-        return _sensor.SelectedItem is SensorDescriptor { Unit: { Length: > 0 } unit }
-            ? $"{text} {unit}"
-            : text;
+        return CurrentUnit() is { } unit ? $"{text} {unit}" : text;
     }
 
     private void UpdateCalibrationLabel() => _calibration.Text = $"{_minPwm}–{_maxPwm}";
+
+    /// <summary>
+    /// The selected sensor's unit, or null for "(none)", an unavailable sensor, or a
+    /// sensor that reports no unit at all. Shared by the live Value column and the
+    /// simulated-value input so the two never disagree about what unit is showing.
+    /// </summary>
+    private string? CurrentUnit() =>
+        _sensor.SelectedItem is SensorDescriptor { Unit: { Length: > 0 } unit } ? unit : null;
+
+    private void UpdateSimUnit() => _simUnit.Text = CurrentUnit() ?? string.Empty;
+
+    /// <summary>
+    /// Runs a typed sensor value through the same chain the tick loop uses, against
+    /// this row's CURRENT on-screen Min/Max and calibration — not what was last saved —
+    /// so editing a range and re-applying immediately is meaningful. Moving the slider
+    /// raises <see cref="TestPwmChanged"/> through its own ValueChanged handler, which
+    /// keeps the slider and this input from ever disagreeing about what the meter is
+    /// being told. Unparseable input changes nothing and never throws.
+    /// </summary>
+    private void ApplySimulatedValue()
+    {
+        if (!TryParseValue(_simValue.Text, out var value))
+        {
+            _simResult.Text = "Could not read that value.";
+            return;
+        }
+
+        var (percent, pwm) = ChannelPipeline.Evaluate(value, (double)_min.Value, (double)_max.Value, _minPwm, _maxPwm);
+
+        var valueText = value.ToString("0.###", CultureInfo.CurrentCulture);
+        var unit = CurrentUnit();
+        _simResult.Text = unit is null
+            ? $"{valueText} -> {percent:0.#} % -> PWM {pwm}"
+            : $"{valueText} {unit} -> {percent:0.#} % -> PWM {pwm}";
+
+        _slider.Value = pwm;
+    }
+
+    /// <summary>
+    /// Accepts both a comma and a full stop as the decimal separator, regardless of the
+    /// machine's locale: this project runs on a Slovak-locale machine where sensors
+    /// display as "62,1", and a user who types "62.1" out of habit must not be told it
+    /// is invalid. The current culture is tried first so a Slovak user's "62,1" still
+    /// works even if the invariant parse would also happen to accept it.
+    /// </summary>
+    private static bool TryParseValue(string text, out double value) =>
+        double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value) ||
+        double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
 
     /// <summary>
     /// Stands in for a saved <see cref="ChannelConfig.SensorId"/> that Discover()

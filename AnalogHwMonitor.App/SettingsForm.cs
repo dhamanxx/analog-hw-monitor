@@ -28,7 +28,7 @@ public sealed class SettingsForm : Form
 
         Text = "Analog Hardware Monitor";
         Icon = AppIcons.Normal;
-        Width = 1100;
+        Width = 1560;
         Height = 320;
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -49,7 +49,8 @@ public sealed class SettingsForm : Form
         foreach (var (text, width) in new[]
                  {
                      ("Pin", 45), ("Channel", 80), ("Sensor", 266), ("Min", 63), ("Max", 63),
-                     ("Value", 93), ("PWM", 48), ("", 58), ("Calibrate", 153), ("", 186), ("Cal. range", 80),
+                     ("Value", 93), ("PWM", 48), ("", 58), ("Calibrate", 153), ("Simulate value", 155),
+                     ("", 186), ("Cal. range", 80), ("Simulated chain", 260),
                  })
         {
             header.Controls.Add(new Label { Text = text, Width = width, TextAlign = ContentAlignment.MiddleLeft });
@@ -227,6 +228,17 @@ public sealed class SettingsForm : Form
         _status.Text = "Scanning ports…";
         Cursor = Cursors.WaitCursor;
         Application.DoEvents();
+
+        // DoEvents() can pump a pending timer tick that reconnects the link — if that
+        // just happened, the scan below would probe the port the app now holds and
+        // wrongly report silence. Re-check rather than trusting the state from before
+        // the pump.
+        if (_link.IsConnected && _link.PortName is { } reconnected)
+        {
+            RefreshPorts();
+            Report($"Already connected to the monitor on {reconnected}.");
+            return;
+        }
 
         string? found;
         try

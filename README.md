@@ -123,7 +123,14 @@ channel therefore stores two calibration points.
 2. Move the slider until the needle rests exactly on zero, then press
    **Save as min**.
 3. Move it until the needle sits exactly at full scale, then press **Save as max**.
-4. Turn **Test** off.
+4. With Test still on, verify the middle: type a value in the sensor's own unit
+   into the box next to the slider and press **Apply**. The row shows the whole
+   chain, for example `60 °C -> 50 % -> PWM 126`, and the slider jumps to match, so
+   a needle that lands in the wrong place tells you immediately whether the range
+   (Min/Max) or the calibration (the two saved PWM points) is at fault. This uses
+   whatever is currently in the Min/Max boxes, saved or not, so you can nudge a
+   range and re-check without pressing Save first.
+5. Turn **Test** off.
 
 Everything between those two points is interpolated linearly. Other channels keep
 running normally while one is being calibrated.
