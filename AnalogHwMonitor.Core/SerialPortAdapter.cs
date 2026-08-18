@@ -22,7 +22,23 @@ public sealed class SerialPortAdapter : ISerialPort
 
     public bool IsOpen => _port.IsOpen;
 
-    public void Open() => _port.Open();
+    public void Open()
+    {
+        _port.Open();
+
+        // The UNO prints its banner at upload time too, and those bytes can still be
+        // sitting in the driver's receive buffer from before this Open() reset it.
+        // Discard them so the caller's banner check can only see bytes sent after
+        // the reset this call just triggered — a stale banner proves nothing about
+        // whether the board is up right now.
+        try
+        {
+            _port.DiscardInBuffer();
+        }
+        catch (Exception)
+        {
+        }
+    }
 
     public void Write(string text) => _port.Write(text);
 
