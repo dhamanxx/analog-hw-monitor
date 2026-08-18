@@ -14,6 +14,8 @@ public sealed class FakeSensorSource : ISensorSource
 
     public List<SensorDescriptor> Sensors { get; } = new();
 
+    public bool Disposed { get; private set; }
+
     public void Refresh() => RefreshCount++;
 
     public IReadOnlyList<SensorDescriptor> Discover() => Sensors;
@@ -24,7 +26,5 @@ public sealed class FakeSensorSource : ISensorSource
         return _values.TryGetValue(sensorId, out var value) ? value : null;
     }
 
-    public void Dispose()
-    {
-    }
+    public void Dispose() => Disposed = true;
 }

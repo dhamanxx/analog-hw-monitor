@@ -110,4 +110,72 @@ public class SensorDefaultsTests
         Assert.Null(config.Channels[1].SensorId);
         Assert.Null(config.Channels[4].SensorId);
     }
+
+    private static readonly SensorDescriptor[] HvciBlockedMachine =
+    {
+        new("/intelcpu/0/load/0",             "CPU Total",    "Intel Core i7-1355U", SensorKind.Load,        "%"),
+        new("/intelcpu/0/temperature/12",     "CPU Package",  "Intel Core i7-1355U", SensorKind.Temperature, "°C"),
+        new("/intelcpu/0/temperature/1",      "Core Average", "Intel Core i7-1355U", SensorKind.Temperature, "°C"),
+        new("/gpu-intel-integrated/x/load/7", "D3D 3D",       "Intel Iris Xe",       SensorKind.Load,        "%"),
+        new("/gpu-intel-integrated/x/load/8", "D3D Copy",     "Intel Iris Xe",       SensorKind.Load,        "%"),
+        new("/ram/load/0",                    "Memory",       "Total Memory",        SensorKind.Load,        "%"),
+        new("/acpi/thermalzone/CPUZ_0",       "CPUZ_0",       "ACPI Thermal Zone",   SensorKind.Temperature, "°C"),
+        new("/acpi/thermalzone/GFXZ_0",       "GFXZ_0",       "ACPI Thermal Zone",   SensorKind.Temperature, "°C"),
+        new("/acpi/thermalzone/PCHZ_0",       "PCHZ_0",       "ACPI Thermal Zone",   SensorKind.Temperature, "°C"),
+    };
+
+    /// <summary>On the blocked machine every CPU-package temperature reads null.</summary>
+    private static bool ReadableOnBlockedMachine(string id) =>
+        !id.StartsWith("/intelcpu/0/temperature", StringComparison.Ordinal);
+
+    [Fact]
+    public void AssignSensors_FindsIntelIntegratedGpuLoadByItsD3dName()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, HvciBlockedMachine, ReadableOnBlockedMachine);
+
+        Assert.Equal("/gpu-intel-integrated/x/load/7", config.Channels[1].SensorId);
+    }
+
+    [Fact]
+    public void AssignSensors_PrefersAReadableAcpiZoneOverADeadCpuPackageSensor()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, HvciBlockedMachine, ReadableOnBlockedMachine);
+
+        Assert.Equal("/acpi/thermalzone/CPUZ_0", config.Channels[3].SensorId);
+        Assert.Equal("/acpi/thermalzone/GFXZ_0", config.Channels[4].SensorId);
+    }
+
+    [Fact]
+    public void AssignSensors_StillPrefersTheVendorSensorWhenItIsReadable()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, HvciBlockedMachine, _ => true);
+
+        Assert.Equal("/intelcpu/0/temperature/12", config.Channels[3].SensorId);
+    }
+
+    [Fact]
+    public void AssignSensors_NeverPicksAnUnrelatedThermalZone()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, HvciBlockedMachine, ReadableOnBlockedMachine);
+
+        Assert.DoesNotContain("PCHZ_0", string.Join(",", config.Channels.Select(c => c.SensorId)));
+    }
+
+    [Fact]
+    public void AssignSensors_WithoutAReadabilityPredicateBehavesAsBefore()
+    {
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, AmdMachine);
+
+        Assert.Equal("/amdcpu/0/temperature/0", config.Channels[3].SensorId);
+    }
 }

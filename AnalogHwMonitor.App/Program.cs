@@ -24,7 +24,10 @@ internal static class Program
         ISensorSource sensors;
         try
         {
-            sensors = new LibreHardwareSensorSource();
+            sensors = new CompositeSensorSource(
+                log,
+                new LibreHardwareSensorSource(),
+                new AcpiThermalSensorSource(log));
             sensors.Refresh();
         }
         catch (Exception ex)
@@ -39,7 +42,7 @@ internal static class Program
         }
 
         var hadUnassignedChannels = config.Channels.Any(c => string.IsNullOrEmpty(c.SensorId));
-        SensorDefaults.AssignSensors(config, sensors.Discover());
+        SensorDefaults.AssignSensors(config, sensors.Discover(), id => sensors.Read(id) is not null);
         if (hadUnassignedChannels)
         {
             // Saving the auto-detected defaults is a convenience, not a precondition
