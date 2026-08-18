@@ -30,7 +30,12 @@ public sealed class AcpiThermalSensorSource : ISensorSource
             _values.Clear();
             _descriptors.Clear();
 
-            foreach (var zone in searcher.Get().Cast<ManagementBaseObject>())
+            // The collection itself is a WMI/COM enumerator and must be disposed
+            // alongside the objects it yields — Refresh runs once a second for the
+            // life of the tray application, so leaving this to the finalizer would
+            // leak one per tick.
+            using var zones = searcher.Get();
+            foreach (var zone in zones.Cast<ManagementBaseObject>())
             {
                 using (zone)
                 {

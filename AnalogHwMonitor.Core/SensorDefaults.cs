@@ -14,7 +14,7 @@ public static class SensorDefaults
         new(SensorKind.Load,        new[] { "CPU Total", "CPU" },                                   new[] { "cpu" }),
         new(SensorKind.Load,        new[] { "GPU Core", "D3D 3D", "GPU" },                          new[] { "gpu" },
             Exclude: new[] { "Memory" }),
-        new(SensorKind.Load,        new[] { "Memory" },                                             new[] { "/ram" }),
+        new(SensorKind.Load,        new[] { "Memory" },                                             new[] { "physical-memory", "/ram" }),
         new(SensorKind.Temperature, new[] { "CPU Package", "Tctl", "Core Average", "CPUZ", "CPU" }, new[] { "cpu" }),
         new(SensorKind.Temperature, new[] { "GPU Core", "GFXZ", "GPU" },                            new[] { "gpu", "gfx" },
             Exclude: new[] { "Memory" }),
