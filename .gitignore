@@ -21,3 +21,33 @@ out/
 application-local.yml
 .claude/settings.local.json
 *.code-workspace
+
+### .NET ###
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+artifacts/
+.vs/
+*.user
+*.suo
+*.cache
+TestResults/
+*.trx
+*.coverage
+project.lock.json
+
+### Arduino ###
+*.hex
+*.elf
+*.o
+*.d
+arduino/**/build/
+.arduino-ide/
+
+### Runtime artifacts (generated next to the .exe) ###
+config.json
+config.json.bak
+log.txt
+log.old.txt
