@@ -17,12 +17,11 @@ public sealed class ChannelRowControl : UserControl
     private readonly CheckBox _test = new() { Text = "Test", Width = 55 };
     private readonly TrackBar _slider = new() { Width = 150, Minimum = 0, Maximum = 255, TickFrequency = 32, Enabled = false };
     private readonly TextBox _simValue = new() { Width = 55, Enabled = false };
-    private readonly Label _simUnit = new() { Width = 35, TextAlign = ContentAlignment.MiddleLeft };
     private readonly Button _simApply = new() { Text = "Apply", Width = 55, Enabled = false };
     private readonly Button _saveMin = new() { Text = "Save as min", Width = 90, Enabled = false };
     private readonly Button _saveMax = new() { Text = "Save as max", Width = 90, Enabled = false };
     private readonly Label _calibration = new() { Width = 80, TextAlign = ContentAlignment.MiddleLeft };
-    private readonly Label _simResult = new() { Width = 260, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+    private readonly string _label;
 
     private int _minPwm;
     private int _maxPwm;
@@ -31,6 +30,7 @@ public sealed class ChannelRowControl : UserControl
     {
         _minPwm = channel.MinPwm;
         _maxPwm = channel.MaxPwm;
+        _label = channel.Label;
 
         _sensor.Items.Add("(none)");
         foreach (var sensor in sensors)
@@ -65,7 +65,6 @@ public sealed class ChannelRowControl : UserControl
         _min.Value = (decimal)channel.Min;
         _max.Value = (decimal)channel.Max;
         UpdateCalibrationLabel();
-        UpdateSimUnit();
 
         _test.CheckedChanged += (_, _) =>
         {
@@ -74,11 +73,6 @@ public sealed class ChannelRowControl : UserControl
             _saveMax.Enabled = _test.Checked;
             _simValue.Enabled = _test.Checked;
             _simApply.Enabled = _test.Checked;
-            if (!_test.Checked)
-            {
-                _simResult.Text = string.Empty;
-            }
-
             TestPwmChanged?.Invoke(this, _test.Checked ? (byte)_slider.Value : null);
         };
 
@@ -102,14 +96,12 @@ public sealed class ChannelRowControl : UserControl
             UpdateCalibrationLabel();
         };
 
-        _sensor.SelectedIndexChanged += (_, _) => UpdateSimUnit();
-
         _simApply.Click += (_, _) => ApplySimulatedValue();
 
         var layout = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = false,
             FlowDirection = FlowDirection.LeftToRight,
         };
@@ -124,20 +116,31 @@ public sealed class ChannelRowControl : UserControl
         layout.Controls.Add(_test);
         layout.Controls.Add(_slider);
         layout.Controls.Add(_simValue);
-        layout.Controls.Add(_simUnit);
         layout.Controls.Add(_simApply);
         layout.Controls.Add(_saveMin);
         layout.Controls.Add(_saveMax);
         layout.Controls.Add(_calibration);
-        layout.Controls.Add(_simResult);
 
         Controls.Add(layout);
-        Height = 40;
-        Dock = DockStyle.Top;
+
+        // AutoSize on both this control and the single FlowLayoutPanel it wraps means
+        // the row's own Width/Height are always exactly what its current content
+        // needs (e.g. the TrackBar's default height, which exceeds a hand-picked
+        // guess) rather than a fixed number that silently clips a control or leaves
+        // dead space when the content changes.
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
     }
 
     /// <summary>Raised with a PWM value while Test is on, and with null when it goes off.</summary>
     public event EventHandler<byte?>? TestPwmChanged;
+
+    /// <summary>
+    /// Raised after Apply, whether it succeeded or the input could not be read. There
+    /// is one shared readout below the whole grid rather than one per row, so the
+    /// message names this row's channel itself.
+    /// </summary>
+    public event EventHandler<string>? SimulationReported;
 
     public void ApplyTo(ChannelConfig channel)
     {
@@ -188,12 +191,11 @@ public sealed class ChannelRowControl : UserControl
     /// <summary>
     /// The selected sensor's unit, or null for "(none)", an unavailable sensor, or a
     /// sensor that reports no unit at all. Shared by the live Value column and the
-    /// simulated-value input so the two never disagree about what unit is showing.
+    /// simulated-value chain message so neither ever disagrees with the other about
+    /// what unit is showing.
     /// </summary>
     private string? CurrentUnit() =>
         _sensor.SelectedItem is SensorDescriptor { Unit: { Length: > 0 } unit } ? unit : null;
-
-    private void UpdateSimUnit() => _simUnit.Text = CurrentUnit() ?? string.Empty;
 
     /// <summary>
     /// Runs a typed sensor value through the same chain the tick loop uses, against
@@ -201,24 +203,26 @@ public sealed class ChannelRowControl : UserControl
     /// so editing a range and re-applying immediately is meaningful. Moving the slider
     /// raises <see cref="TestPwmChanged"/> through its own ValueChanged handler, which
     /// keeps the slider and this input from ever disagreeing about what the meter is
-    /// being told. Unparseable input changes nothing and never throws.
+    /// being told. Unparseable input changes nothing and never throws; either way,
+    /// <see cref="SimulationReported"/> carries the one line the shared readout below
+    /// the grid shows, naming this row's channel since that readout is shared.
     /// </summary>
     private void ApplySimulatedValue()
     {
         if (!TryParseValue(_simValue.Text, out var value))
         {
-            _simResult.Text = "Could not read that value.";
+            SimulationReported?.Invoke(this, $"{_label}: could not read \"{_simValue.Text}\" as a number.");
             return;
         }
 
         var (percent, pwm) = ChannelPipeline.Evaluate(value, (double)_min.Value, (double)_max.Value, _minPwm, _maxPwm);
 
         var valueText = value.ToString("0.###", CultureInfo.CurrentCulture);
-        var unit = CurrentUnit();
-        _simResult.Text = unit is null
-            ? $"{valueText} -> {percent:0.#} % -> PWM {pwm}"
-            : $"{valueText} {unit} -> {percent:0.#} % -> PWM {pwm}";
+        var chain = CurrentUnit() is { } unit
+            ? $"{valueText} {unit} -> {percent:0.#} % -> PWM {pwm}"
+            : $"{valueText} -> {percent:0.#} % -> PWM {pwm}";
 
+        SimulationReported?.Invoke(this, $"{_label}: {chain}");
         _slider.Value = pwm;
     }
 
@@ -226,12 +230,61 @@ public sealed class ChannelRowControl : UserControl
     /// Accepts both a comma and a full stop as the decimal separator, regardless of the
     /// machine's locale: this project runs on a Slovak-locale machine where sensors
     /// display as "62,1", and a user who types "62.1" out of habit must not be told it
-    /// is invalid. The current culture is tried first so a Slovak user's "62,1" still
-    /// works even if the invariant parse would also happen to accept it.
+    /// is invalid. The current culture is tried first, so "62,1" always works.
     /// </summary>
-    private static bool TryParseValue(string text, out double value) =>
-        double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value) ||
-        double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+    private static bool TryParseValue(string text, out double value)
+    {
+        if (double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value))
+        {
+            return true;
+        }
+
+        // The current-culture attempt failed. Retrying under the invariant culture is
+        // only safe when the text could not also be a validly grouped integer under
+        // the current culture's OWN group separator and group size (e.g. Slovak
+        // "1.234" reading as the integer 1234 on a machine where "." is configured as
+        // the thousands separator) — reinterpreting a grouped number as a plain
+        // decimal under a different culture would silently turn it into a different
+        // value. "62.1" never matches that pattern (its second segment is one digit,
+        // not a full group), so it still falls through and parses as 62.1.
+        if (LooksLikeGroupedInteger(text, CultureInfo.CurrentCulture.NumberFormat))
+        {
+            value = 0;
+            return false;
+        }
+
+        return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool LooksLikeGroupedInteger(string text, NumberFormatInfo format)
+    {
+        var separator = format.NumberGroupSeparator;
+        if (string.IsNullOrEmpty(separator) || !text.Contains(separator, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var groupSize = format.NumberGroupSizes.Length > 0 && format.NumberGroupSizes[0] > 0
+            ? format.NumberGroupSizes[0]
+            : 3;
+
+        var segments = text.Split(separator);
+        for (var i = 0; i < segments.Length; i++)
+        {
+            var segment = segments[i];
+            if (segment.Length == 0 || !segment.All(char.IsAsciiDigit))
+            {
+                return false;
+            }
+
+            if (i == 0 ? segment.Length > groupSize : segment.Length != groupSize)
+            {
+                return false;
+            }
+        }
+
+        return segments.Length > 1;
+    }
 
     /// <summary>
     /// Stands in for a saved <see cref="ChannelConfig.SensorId"/> that Discover()

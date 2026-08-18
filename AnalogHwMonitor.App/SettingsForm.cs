@@ -12,6 +12,16 @@ public sealed class SettingsForm : Form
     private readonly ComboBox _ports = new() { Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly CheckBox _startWithWindows = new() { Text = "Start with Windows", AutoSize = true };
     private readonly Label _status = new() { Dock = DockStyle.Bottom, Height = 24, TextAlign = ContentAlignment.MiddleLeft };
+
+    /// <summary>
+    /// The one shared readout for every row's "Apply" button — there is no per-row
+    /// result label, so this names the channel itself (e.g. "CPU Temp: 60 °C -> 50 %
+    /// -> PWM 126"). Sits just above <see cref="_status"/> so the two don't compete
+    /// for the same line: Save/Detect results on one, calibration simulation on the
+    /// other.
+    /// </summary>
+    private readonly Label _simulation = new() { Dock = DockStyle.Bottom, Height = 24, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+
     private readonly List<ChannelRowControl> _rows = new();
 
     public SettingsForm(
@@ -28,8 +38,15 @@ public sealed class SettingsForm : Form
 
         Text = "Analog Hardware Monitor";
         Icon = AppIcons.Normal;
-        Width = 1560;
-        Height = 320;
+
+        // Set explicitly rather than inherited from whatever the template defaults to:
+        // every size in this window is a hand-picked pixel value, and AutoScaleMode.Dpi
+        // scales all of them together by the monitor's actual DPI, so the layout stays
+        // proportionally the same at 125% and 150% instead of drifting relative to
+        // whatever the default happened to be.
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96f, 96f);
+
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -45,26 +62,48 @@ public sealed class SettingsForm : Form
         top.Controls.Add(detect);
         top.Controls.Add(_startWithWindows);
 
-        var header = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 24, WrapContents = false };
+        var header = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+        };
+        // Each width matches the corresponding row control(s) exactly (e.g. "Sensor"
+        // is 260 because the sensor ComboBox itself is 260 wide, not because the
+        // dropdown was shrunk) so the only gap between a header caption and its
+        // column is FlowLayoutPanel's own per-control margin, not hand-added padding.
         foreach (var (text, width) in new[]
                  {
-                     ("Pin", 45), ("Channel", 80), ("Sensor", 266), ("Min", 63), ("Max", 63),
-                     ("Value", 93), ("PWM", 48), ("", 58), ("Calibrate", 153), ("Simulate value", 155),
-                     ("", 186), ("Cal. range", 80), ("Simulated chain", 260),
+                     ("Pin", 45), ("Channel", 80), ("Sensor", 260), ("Min", 60), ("Max", 60),
+                     ("Value", 90), ("PWM", 45), ("", 55), ("Calibrate", 150), ("Simulate", 110),
+                     ("", 180), ("Cal. range", 80),
                  })
         {
             header.Controls.Add(new Label { Text = text, Width = width, TextAlign = ContentAlignment.MiddleLeft });
         }
 
-        var rows = new Panel { Dock = DockStyle.Fill };
+        // AutoScroll rather than a plain Panel: a plain Panel with Dock = Fill forces
+        // every docked child to the visible viewport size, so overflow in either
+        // dimension is simply invisible rather than reachable. AutoScroll is what
+        // turns "doesn't fit" into a scrollbar instead of a silently missing channel
+        // or a silently clipped column — regardless of how the numbers below turn out
+        // to be wrong on some future machine.
+        var rows = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+        };
 
-        // Added in reverse because Dock = Top stacks the last-added control on top.
-        for (var i = _monitor.Config.Channels.Count - 1; i >= 0; i--)
+        for (var i = 0; i < _monitor.Config.Channels.Count; i++)
         {
             var index = i;
             var row = new ChannelRowControl(_monitor.Config.Channels[i], available);
             row.TestPwmChanged += (_, pwm) => _monitor.SetTestPwm(index, pwm);
-            _rows.Insert(0, row);
+            row.SimulationReported += (_, message) => _simulation.Text = message;
+            _rows.Add(row);
             rows.Controls.Add(row);
         }
 
@@ -88,7 +127,45 @@ public sealed class SettingsForm : Form
         Controls.Add(header);
         Controls.Add(top);
         Controls.Add(buttons);
+        Controls.Add(_simulation);
         Controls.Add(_status);
+
+        // The window's size is derived from what its content actually measures,
+        // rather than a pixel count that may or may not still be enough after the
+        // next change to a row. header.PreferredSize and rows.PreferredSize are real
+        // layout queries, not a guess baked in at design time. Querying
+        // rows.PreferredSize directly — rather than summing each row's own
+        // PreferredSize — matters: summing the rows alone ignores the margins
+        // FlowLayoutPanel puts between them and undercounts the real height by
+        // exactly that much, which is the same kind of hand-arithmetic mistake that
+        // clipped the fifth row in the first place. The already-fixed chrome bars
+        // (top/buttons/status/simulation) keep their known-good heights. ClientSize
+        // does the border/title-bar arithmetic that would otherwise have to be
+        // hand-guessed.
+        var contentWidth = Math.Max(header.PreferredSize.Width, rows.PreferredSize.Width);
+        var contentHeight = top.Height + header.PreferredSize.Height + rows.PreferredSize.Height
+            + buttons.Height + _simulation.Height + _status.Height;
+
+        ClientSize = new Size(contentWidth, contentHeight);
+
+        // Clamped to the screen it is about to open on so the window itself can never
+        // be wider or taller than what is actually available — a FixedDialog that
+        // exceeds the work area centres itself partly off-screen with no way for the
+        // user to drag it back. Whatever content the clamp cuts off is still reachable
+        // through the rows panel's own scrollbar(s) rather than simply hidden.
+        var workArea = Screen.PrimaryScreen?.WorkingArea;
+        if (workArea is { } area)
+        {
+            if (Width > area.Width)
+            {
+                Width = area.Width;
+            }
+
+            if (Height > area.Height)
+            {
+                Height = area.Height;
+            }
+        }
 
         RefreshPorts();
         _startWithWindows.Checked = ReadStartupRegistration();
