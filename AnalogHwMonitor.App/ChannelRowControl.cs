@@ -73,6 +73,13 @@ public sealed class ChannelRowControl : UserControl
             _saveMax.Enabled = _test.Checked;
             _simValue.Enabled = _test.Checked;
             _simApply.Enabled = _test.Checked;
+            if (!_test.Checked)
+            {
+                // Turning Test off releases this row — nothing on screen should
+                // still claim a channel is under simulation once it is not.
+                SimulationReported?.Invoke(this, string.Empty);
+            }
+
             TestPwmChanged?.Invoke(this, _test.Checked ? (byte)_slider.Value : null);
         };
 
@@ -136,9 +143,13 @@ public sealed class ChannelRowControl : UserControl
     public event EventHandler<byte?>? TestPwmChanged;
 
     /// <summary>
-    /// Raised after Apply, whether it succeeded or the input could not be read. There
-    /// is one shared readout below the whole grid rather than one per row, so the
-    /// message names this row's channel itself.
+    /// Raised after Apply (success or failure) with the message the shared readout
+    /// below the grid should show, naming this row's channel since that readout is
+    /// shared across all five rows. Also raised with an empty string the moment this
+    /// row leaves test mode (Test unchecked, whether by hand, StopTest(), or
+    /// StopAllTests()), so the shared label never keeps describing a channel that is
+    /// no longer under simulation — any row leaving test mode is enough to clear it,
+    /// without tracking which row last wrote to it.
     /// </summary>
     public event EventHandler<string>? SimulationReported;
 
