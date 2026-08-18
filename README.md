@@ -195,7 +195,14 @@ with defaults, so a bad edit costs you your settings but never a startup loop.
 | `AnalogHwMonitor.App/` | WinForms tray icon and settings window |
 | `AnalogHwMonitor.Tests/` | xUnit tests for the core, using fake sensors and a fake serial link |
 | `arduino/analog_hw_monitor/` | The Arduino sketch |
+| `tools/IconGenerator/` | Draws `AnalogHwMonitor.App/appicon.ico` and `appicon-warning.ico` — not part of the app build, run by hand when the icon needs regenerating |
 | `docs/superpowers/specs/` | Design documents |
+
+Regenerate the icons after changing the dial's design:
+
+```powershell
+dotnet run --project tools\IconGenerator -- AnalogHwMonitor.App\appicon.ico AnalogHwMonitor.App\appicon-warning.ico
+```
 
 `AnalogHwMonitor.Core` talks to the outside world through two interfaces,
 `ISensorSource` and `IMeterLink`, so the mapping, calibration and update loop can be

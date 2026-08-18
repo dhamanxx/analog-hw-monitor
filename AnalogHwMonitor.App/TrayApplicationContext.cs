@@ -38,7 +38,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _icon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = AppIcons.Normal,
             Text = "Analog Hardware Monitor",
             Visible = true,
             ContextMenuStrip = menu,
@@ -79,7 +79,7 @@ public sealed class TrayApplicationContext : ApplicationContext
                 _tickFailureReported = true;
             }
 
-            _icon.Icon = SystemIcons.Warning;
+            _icon.Icon = AppIcons.Warning;
             _icon.Text = Truncate($"Analog Hardware Monitor — tick failed: {ex.Message}");
             return;
         }
@@ -92,7 +92,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         // A warning overlay plus the reason in the tooltip: the needles say the
         // link is dead, the tray says why.
-        _icon.Icon = _link.IsConnected ? SystemIcons.Application : SystemIcons.Warning;
+        _icon.Icon = _link.IsConnected ? AppIcons.Normal : AppIcons.Warning;
         _icon.Text = _link.IsConnected
             ? $"Analog Hardware Monitor — {_link.PortName}"
             : Truncate($"Analog Hardware Monitor — {_link.LastError ?? "disconnected"}");

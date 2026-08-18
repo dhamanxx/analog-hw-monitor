@@ -8,10 +8,20 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>AnalogHwMonitor</AssemblyName>
+    <ApplicationIcon>appicon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\AnalogHwMonitor.Core\AnalogHwMonitor.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="appicon.ico">
+      <LogicalName>AnalogHwMonitor.App.appicon.ico</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="appicon-warning.ico">
+      <LogicalName>AnalogHwMonitor.App.appicon-warning.ico</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

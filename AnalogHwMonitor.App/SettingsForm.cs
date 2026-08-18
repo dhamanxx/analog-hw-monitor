@@ -20,6 +20,7 @@ public sealed class SettingsForm : Form
         _store = store;
 
         Text = "Analog Hardware Monitor";
+        Icon = AppIcons.Normal;
         Width = 1100;
         Height = 320;
         StartPosition = FormStartPosition.CenterScreen;
