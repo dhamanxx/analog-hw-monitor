@@ -144,9 +144,24 @@ public sealed class ChannelRowControl : UserControl
     {
         _value.Text = reading.TestMode
             ? "test"
-            : reading.Value is { } value ? value.ToString("0.0") : "—";
+            : reading.Value is { } value ? WithUnit(value) : "—";
         _value.ForeColor = reading.SensorMissing ? Color.Firebrick : SystemColors.ControlText;
         _pwm.Text = reading.Pwm.ToString();
+    }
+
+    /// <summary>
+    /// "34.0 %" rather than a bare "34.0". The unit is what tells a load apart from a
+    /// temperature at a glance, both sensor sources fill
+    /// <see cref="SensorDescriptor.Unit"/> in, and the spec's settings table shows it.
+    /// A sensor that reports no unit — or the "(none)" entry, or a sensor that
+    /// Discover() did not return — simply gets no suffix.
+    /// </summary>
+    private string WithUnit(float value)
+    {
+        var text = value.ToString("0.0");
+        return _sensor.SelectedItem is SensorDescriptor { Unit: { Length: > 0 } unit }
+            ? $"{text} {unit}"
+            : text;
     }
 
     private void UpdateCalibrationLabel() => _calibration.Text = $"{_minPwm}–{_maxPwm}";

@@ -48,13 +48,17 @@ public sealed class TrayApplicationContext : ApplicationContext
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += (_, _) => OnTick();
         _timer.Start();
+
+        // Dispose writes "Stopped."; without this line a clean run leaves log.txt with
+        // one entry and no way to tell when the session it ended actually began.
+        _log.Write($"Started on {_link.PortName ?? "no configured port"}.");
     }
 
     public void ShowSettings()
     {
         if (_settings is null || _settings.IsDisposed)
         {
-            _settings = new SettingsForm(_monitor, _link, _store, _sensors);
+            _settings = new SettingsForm(_monitor, _link, _store, _sensors, _log);
         }
 
         _settings.Show();

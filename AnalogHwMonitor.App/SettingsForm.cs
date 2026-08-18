@@ -7,17 +7,24 @@ public sealed class SettingsForm : Form
     private readonly MonitorService _monitor;
     private readonly SerialMeterLink _link;
     private readonly ConfigStore _store;
+    private readonly IAppLog _log;
     private readonly StartupRegistration _startup = new();
     private readonly ComboBox _ports = new() { Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly CheckBox _startWithWindows = new() { Text = "Start with Windows", AutoSize = true };
     private readonly Label _status = new() { Dock = DockStyle.Bottom, Height = 24, TextAlign = ContentAlignment.MiddleLeft };
     private readonly List<ChannelRowControl> _rows = new();
 
-    public SettingsForm(MonitorService monitor, SerialMeterLink link, ConfigStore store, ISensorSource sensors)
+    public SettingsForm(
+        MonitorService monitor,
+        SerialMeterLink link,
+        ConfigStore store,
+        ISensorSource sensors,
+        IAppLog log)
     {
         _monitor = monitor;
         _link = link;
         _store = store;
+        _log = log;
 
         Text = "Analog Hardware Monitor";
         Icon = AppIcons.Normal;
@@ -83,7 +90,7 @@ public sealed class SettingsForm : Form
         Controls.Add(_status);
 
         RefreshPorts();
-        _startWithWindows.Checked = _startup.IsEnabled();
+        _startWithWindows.Checked = ReadStartupRegistration();
 
         _monitor.Updated += OnUpdated;
         FormClosing += (_, e) =>
@@ -112,34 +119,140 @@ public sealed class SettingsForm : Form
 
     private void RefreshPorts()
     {
+        var names = ListPortNames();
+
         _ports.Items.Clear();
-        foreach (var name in new SerialPortFactory().GetPortNames())
+        foreach (var name in names)
         {
             _ports.Items.Add(name);
         }
 
-        if (_link.PortName is { } current && _ports.Items.Contains(current))
+        SelectPort(_link.PortName);
+    }
+
+    /// <summary>
+    /// Enumerating the serial ports goes through the Windows driver stack and can
+    /// throw. This window was opened by a tray-menu click, so a failure belongs in the
+    /// status bar rather than in an unhandled exception.
+    /// </summary>
+    private IReadOnlyList<string> ListPortNames()
+    {
+        try
         {
-            _ports.SelectedItem = current;
+            return new SerialPortFactory().GetPortNames();
         }
+        catch (Exception ex)
+        {
+            Report($"Could not list the serial ports: {ex.Message}");
+            return Array.Empty<string>();
+        }
+    }
+
+    /// <summary>
+    /// Selects a port, adding a placeholder entry first when that port is not currently
+    /// enumerated. The combo is a DropDownList: without the placeholder a
+    /// configured-but-absent port leaves nothing selected, and Save then writes null
+    /// over a perfectly good setting. Same defect, same cure as
+    /// <c>ChannelRowControl.MissingSensor</c>. Nothing here overrides a deliberate
+    /// choice — picking another port from the list still changes it.
+    /// </summary>
+    private void SelectPort(string? portName)
+    {
+        if (string.IsNullOrWhiteSpace(portName))
+        {
+            return;
+        }
+
+        if (_ports.Items.Contains(portName))
+        {
+            _ports.SelectedItem = portName;
+            return;
+        }
+
+        var missing = new MissingPort(portName);
+        _ports.Items.Add(missing);
+        _ports.SelectedItem = missing;
+    }
+
+    private string? SelectedPortName() => _ports.SelectedItem switch
+    {
+        string name => name,
+        MissingPort missing => missing.Name,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Reading HKCU can be denied by policy. A settings window that cannot answer
+    /// "does this start with Windows?" still has every other job to do.
+    /// </summary>
+    private bool ReadStartupRegistration()
+    {
+        try
+        {
+            return _startup.IsEnabled();
+        }
+        catch (Exception ex)
+        {
+            Report($"Could not read the startup registration: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Shows a message in the status bar and records it in log.txt.</summary>
+    private void Report(string message)
+    {
+        _status.Text = message;
+        _log.Write(message);
     }
 
     private void Detect()
     {
+        // The link keeps the working port open for the life of the process, so probing
+        // it would only ever get UnauthorizedAccessException back — Detect used to
+        // report "no device" for the board sitting right there. A connected link has
+        // already proved which port answers AHM1, so that port *is* the answer.
+        // RefreshPorts() selects it, and none of this takes measurable time: the 1 Hz
+        // tick is not delayed, no frame is missed, and no needle moves.
+        if (_link.IsConnected && _link.PortName is { } connected)
+        {
+            RefreshPorts();
+            Report($"Already connected to the monitor on {connected}.");
+            return;
+        }
+
+        // Not connected means nothing is being sent, so the Arduino watchdog pulled the
+        // needles to zero at least three seconds ago. A slow scan here cannot make them
+        // fall — there is nothing left to fall from — which is why blocking the
+        // UI thread for its duration is acceptable in this branch and only this one.
         _status.Text = "Scanning ports…";
+        Cursor = Cursors.WaitCursor;
         Application.DoEvents();
 
-        var found = PortDetector.FindMonitorPort(new SerialPortFactory(), NullLog.Instance);
+        string? found;
+        try
+        {
+            found = PortDetector.FindMonitorPort(new SerialPortFactory(), _log);
+        }
+        catch (Exception ex)
+        {
+            Report($"Port scan failed: {ex.Message}");
+            return;
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+
         RefreshPorts();
 
         if (found is null)
         {
-            _status.Text = "No device answered with the AHM1 banner.";
+            Report("No device answered with the AHM1 banner.");
             return;
         }
 
-        _ports.SelectedItem = found;
-        _status.Text = $"Found the monitor on {found}.";
+        SelectPort(found);
+        Report($"Found the monitor on {found}.");
     }
 
     private void Save()
@@ -151,14 +264,52 @@ public sealed class SettingsForm : Form
             _monitor.SetTestPwm(index, null);
         }
 
-        _monitor.Config.ComPort = _ports.SelectedItem as string;
+        var previousPort = _monitor.Config.ComPort;
+        _monitor.Config.ComPort = SelectedPortName();
         _monitor.Config.StartWithWindows = _startWithWindows.Checked;
 
-        _link.PortName = _monitor.Config.ComPort;
-        _startup.SetEnabled(_startWithWindows.Checked, Application.ExecutablePath);
-        _store.Save(_monitor.Config);
+        if (previousPort != _monitor.Config.ComPort)
+        {
+            _log.Write(
+                $"COM port changed from {previousPort ?? "<none>"} to {_monitor.Config.ComPort ?? "<none>"}.");
+        }
 
-        _status.Text = $"Saved to {_store.Path}";
+        _link.PortName = _monitor.Config.ComPort;
+
+        // These are the only writes a user can trigger by hand, and both fail for
+        // reasons that say nothing about whether the application is still usable: the
+        // Run key can be locked down by policy, the install directory can be read-only.
+        // Program.cs already refuses to die over a failed config write — the same
+        // rule holds here, with the reason in the status bar, not in a stack trace.
+        var problems = new List<string>();
+
+        try
+        {
+            _startup.SetEnabled(_startWithWindows.Checked, Application.ExecutablePath);
+            _log.Write(_startWithWindows.Checked
+                ? "Registered to start with Windows."
+                : "Removed the start-with-Windows registration.");
+        }
+        catch (Exception ex)
+        {
+            problems.Add($"startup registration ({ex.Message})");
+            _log.Write($"Could not change the startup registration: {ex.Message}");
+        }
+
+        try
+        {
+            _store.Save(_monitor.Config);
+            _log.Write($"Settings saved to {_store.Path}.");
+        }
+        catch (Exception ex)
+        {
+            problems.Add($"config.json ({ex.Message})");
+            _log.Write($"Could not save the configuration: {ex.Message}");
+        }
+
+        _status.Text = problems.Count == 0
+            ? $"Saved to {_store.Path}"
+            : "Not fully saved — " + string.Join("; ", problems);
     }
 
     private void StopAllTests()
@@ -190,5 +341,15 @@ public sealed class SettingsForm : Form
         }
 
         base.Dispose(disposing);
+    }
+
+    /// <summary>
+    /// Stands in for a configured COM port that GetPortNames() did not return this time
+    /// (board unplugged, driver not loaded yet), so Save writes it back unchanged
+    /// instead of erasing it.
+    /// </summary>
+    private sealed record MissingPort(string Name)
+    {
+        public override string ToString() => $"{Name} (currently unavailable)";
     }
 }

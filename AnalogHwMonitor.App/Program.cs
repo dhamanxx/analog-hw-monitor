@@ -21,25 +21,46 @@ internal static class Program
 
         var config = loaded.Config;
 
-        ISensorSource sensors;
-        try
+        // Each sensor source is constructed under its own guard. LibreHardwareMonitor
+        // opens a ring0 driver in its constructor and can fail outright; when it does,
+        // the ACPI thermal zones alone still drive both temperature channels, which
+        // beats refusing to start. Only a machine where nothing could be opened is a
+        // dead end worth a message box.
+        var sources = new List<ISensorSource>();
+        var unavailable = new List<string>();
+
+        void TryAddSource(string name, Func<ISensorSource> create)
         {
-            sensors = new CompositeSensorSource(
-                log,
-                new LibreHardwareSensorSource(),
-                new AcpiThermalSensorSource(log));
-            sensors.Refresh();
+            try
+            {
+                sources.Add(create());
+            }
+            catch (Exception ex)
+            {
+                unavailable.Add($"{name}: {ex.Message}");
+                log.Write($"Sensor source unavailable — {name}: {ex.Message}");
+            }
         }
-        catch (Exception ex)
+
+        TryAddSource("LibreHardwareMonitor", () => new LibreHardwareSensorSource());
+        TryAddSource("ACPI thermal zones", () => new AcpiThermalSensorSource(log));
+
+        if (sources.Count == 0)
         {
-            log.Write($"Cannot open the hardware monitor: {ex.Message}");
             MessageBox.Show(
-                $"Cannot read hardware sensors.\n\n{ex.Message}\n\nRun the application as administrator.",
+                "Cannot read hardware sensors. No sensor source could be opened:\n\n"
+                + string.Join(Environment.NewLine, unavailable)
+                + "\n\nRun the application as administrator.",
                 "Analog Hardware Monitor",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
             return;
         }
+
+        // From here on the composite absorbs and latches every source fault, so a
+        // source that dies later costs its own readings and nothing else.
+        ISensorSource sensors = new CompositeSensorSource(log, sources.ToArray());
+        sensors.Refresh();
 
         var hadUnassignedChannels = config.Channels.Any(c => string.IsNullOrEmpty(c.SensorId));
         SensorDefaults.AssignSensors(config, sensors.Discover(), id => sensors.Read(id) is not null);
