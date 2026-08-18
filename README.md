@@ -1,0 +1,221 @@
+# Analog Hardware Monitor
+
+Five analog panel voltmeters showing what your PC is doing — CPU load, GPU load,
+memory usage, CPU temperature and GPU temperature — as needles on real dials
+instead of numbers on a screen.
+
+A Windows tray application reads the sensors, converts each reading into a needle
+position, and sends the five values to an Arduino UNO over USB once a second.
+The Arduino drives five PWM pins, and each meter's own inertia turns the pulses
+into a steady deflection.
+
+> **Status: design complete, implementation not started.**
+> The full design lives in
+> [`docs/superpowers/specs/2026-08-18-analog-hw-monitor-design.md`](docs/superpowers/specs/2026-08-18-analog-hw-monitor-design.md).
+> Everything below describes the system as designed; the build and calibration
+> instructions become usable once the code exists.
+
+## How it works
+
+```text
+LibreHardwareMonitorLib
+        |  sensor readings
+        v
+AnalogHwMonitor (Windows tray app)     mapping, calibration, config
+        |  "V:128,200,64,30,255"  @ 1 Hz, 115200 baud
+        v
+Arduino UNO                            parse, analogWrite, watchdog
+        |  PWM
+        v
+5x DC voltmeter, 0-5 V
+```
+
+All the intelligence sits on the PC. The Arduino receives finished PWM values
+(0–255) and writes them to pins — it knows nothing about temperatures, percentages
+or calibration. That means changing a range or recalibrating a meter is an edit in
+the settings window, never a reflash.
+
+## Channels
+
+| Channel | Reading | Arduino pin | Default range |
+| --- | --- | --- | --- |
+| 0 | CPU load | 3 | 0–100 % |
+| 1 | GPU load | 5 | 0–100 % |
+| 2 | Memory usage | 6 | 0–100 % |
+| 3 | CPU temperature | 9 | 30–90 °C |
+| 4 | GPU temperature | 10 | 30–90 °C |
+
+Temperatures default to 30–90 °C rather than 0–100 °C because a CPU never drops
+to room temperature under Windows — a 0–100 scale would keep every needle parked
+in the upper half of its dial. Both ends of every range are configurable, and any
+channel can be pointed at a different sensor entirely.
+
+## Hardware
+
+- Arduino UNO (or any 5 V ATmega328P board) and a USB cable
+- 5× DC voltmeter with a 0–5 V range
+- Optional: 1 kΩ resistor + 10 µF capacitor per channel
+
+Wire each meter between its PWM pin (3, 5, 6, 9, 10) and ground, observing polarity.
+A moving-coil meter smooths PWM by itself and usually connects directly. If a needle
+visibly vibrates, add an RC low-pass filter (1 kΩ in series, 10 µF to ground) on that
+output.
+
+One caveat if you modify the sketch: pins 5 and 6 run on Timer0, which also drives
+`millis()`. Changing the Timer0 prescaler to alter PWM frequency will break the
+connection watchdog.
+
+## Software requirements
+
+- Windows 10 or 11
+- .NET 8 SDK to build, .NET 8 Desktop Runtime to run
+- Arduino IDE (or `arduino-cli`) to flash the sketch
+
+**The application must run as administrator.** LibreHardwareMonitor loads a ring0
+driver to reach the hardware sensors; without elevation most temperature readings
+are simply absent. The app manifest requests elevation, so Windows will prompt.
+
+## Getting started
+
+Build and run the application:
+
+```powershell
+dotnet build
+dotnet run --project AnalogHwMonitor.App
+```
+
+Flash the sketch from `arduino/analog_hw_monitor/` to the UNO.
+
+Then, in the tray app's settings window:
+
+1. Pick the COM port, or press **Detect** — the app scans the ports and finds the
+   one that identifies itself as the monitor.
+2. Check the sensor assigned to each of the five channels. The app picks sensible
+   defaults, but sensor names vary by vendor (AMD reports `Core (Tctl/Tdie)`,
+   Intel reports `CPU Package`), so confirm each one against the live readings.
+3. Calibrate the meters — see below.
+
+The **Value** and **PWM** columns update once a second, so you can see both what
+is being read and what is being sent without attaching a debugger.
+
+## Calibrating a meter
+
+Cheap panel meters differ from one another: at the same PWM value each needle sits
+somewhere slightly different, and many never quite reach full scale at 255. Each
+channel therefore stores two calibration points.
+
+1. Flip the **Test** switch on the channel's row. The channel disconnects from its
+   sensor and follows a slider that sends raw PWM.
+2. Move the slider until the needle rests exactly on zero, then press
+   **Save as min**.
+3. Move it until the needle sits exactly at full scale, then press **Save as max**.
+4. Turn **Test** off.
+
+Everything between those two points is interpolated linearly. Other channels keep
+running normally while one is being calibrated.
+
+## Configuration
+
+`config.json` sits next to the executable — the whole thing is portable, nothing is
+written to `%AppData%`. The settings window writes this file for you; editing it by
+hand is possible but not required.
+
+```json
+{
+  "comPort": "COM3",
+  "startWithWindows": true,
+  "channels": [
+    {
+      "pin": 3,
+      "label": "CPU Load",
+      "sensorId": "/amdcpu/0/load/0",
+      "min": 0,
+      "max": 100,
+      "minPwm": 0,
+      "maxPwm": 255
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `comPort` | Serial port the Arduino is on |
+| `startWithWindows` | Registers the app under the current user's `Run` key |
+| `sensorId` | LibreHardwareMonitor sensor identifier |
+| `min` / `max` | Sensor values that mean zero and full deflection, in the sensor's own units |
+| `minPwm` / `maxPwm` | Per-meter calibration points |
+
+The `channels` array always holds exactly five entries, and their order defines
+the channels.
+
+Inverted bounds are allowed, not errors: `min > max` or `minPwm > maxPwm` simply
+reverses the direction the needle travels. If `min` equals `max`, the channel reads
+zero rather than dividing by zero.
+
+## Serial protocol
+
+One ASCII line per second at 115200 baud:
+
+```text
+V:128,200,64,30,255
+```
+
+Five integers, 0–255, in channel order. Text rather than binary on purpose: when
+something misbehaves you can open the Arduino IDE's Serial Monitor and read exactly
+what arrived, or type a frame by hand to move the needles.
+
+On boot the Arduino announces itself with `AHM1`. That is what the **Detect** button
+looks for, and it stops the app from talking to your printer. Opening a serial port
+resets an UNO, so the app waits two seconds after connecting before it starts sending.
+
+## When something goes wrong
+
+The needles are meant to tell you when they are lying.
+
+- **All five needles drop to zero and stay there.** The Arduino has not received a
+  valid frame for three seconds. The app has crashed, been closed, or lost the port.
+  A live but idle PC never looks like this.
+- **One needle sits at zero while the others move.** That channel's sensor is gone —
+  typically after a GPU swap. Its row is highlighted red in the settings window;
+  pick a new sensor from the dropdown.
+- **The tray icon shows a warning badge.** The port could not be opened. The tooltip
+  says why; the app keeps retrying every five seconds on its own.
+- **Something happened while you were away.** `log.txt` sits next to the executable
+  and rotates to `log.old.txt` at 1 MB.
+
+A missing or corrupted `config.json` is renamed to `config.json.bak` and replaced
+with defaults, so a bad edit costs you your settings but never a startup loop.
+
+## Project layout
+
+| Path | Contents |
+| --- | --- |
+| `AnalogHwMonitor.Core/` | Sensor reading, mapping, calibration, serial link, config — no UI |
+| `AnalogHwMonitor.App/` | WinForms tray icon and settings window |
+| `AnalogHwMonitor.Tests/` | xUnit tests for the core, using fake sensors and a fake serial link |
+| `arduino/analog_hw_monitor/` | The Arduino sketch |
+| `docs/superpowers/specs/` | Design documents |
+
+`AnalogHwMonitor.Core` talks to the outside world through two interfaces,
+`ISensorSource` and `IMeterLink`, so the mapping, calibration and update loop can be
+tested without a single sensor or a connected board:
+
+```powershell
+dotnet test
+```
+
+The sketch and the serial port are verified by hand — the Serial Monitor is enough
+to drive the needles, and closing the app is enough to test the watchdog.
+
+## Deliberately left out
+
+No history or graphs, no support for multiple devices, no dial-face generator, no
+auto-update, no non-linear scaling curves, and no software smoothing. If the needles
+turn out to twitch too much at one sample per second, smoothing is a small addition
+to a single class.
+
+## Credits
+
+Sensor data comes from
+[LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor).

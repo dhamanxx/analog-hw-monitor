@@ -1,0 +1,23 @@
+target/
+build/
+bin/
+out/
+.gradle/
+.vscode/
+.DS_Store
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.idea
+*.iws
+*.iml
+*.ipr
+*.swo
+*.swp
+application-local.yml
+.claude/settings.local.json
+*.code-workspace
