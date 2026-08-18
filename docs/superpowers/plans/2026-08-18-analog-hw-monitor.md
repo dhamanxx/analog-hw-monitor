@@ -3928,3 +3928,202 @@ git commit -m "feat: draw and wire the analog dial application icon"
 Start the application and confirm the dial appears in the system tray, on the settings
 window, and on the executable in Explorer, and that pulling the USB cable swaps the tray
 icon for the warning variant.
+
+---
+
+### Task 15: Simulate a sensor value during calibration
+
+Added after the owner calibrated real meters and found the workflow incomplete. The
+Test slider drives raw PWM, which is what you need to *find* the two calibration
+points — but once they are stored there is no way to check anything in between. A
+cheap panel movement is usually accurate at both ends and wanders in the middle, and
+nothing in the window would reveal that.
+
+Typing a value in the sensor's own unit and watching where the needle lands exercises
+the whole chain rather than just the meter:
+
+```text
+typed value -> ChannelMapper (Min/Max) -> percent -> MeterCalibration (MinPwm/MaxPwm) -> PWM -> meter
+```
+
+So a temperature channel ranged 30–90 °C, given `60`, yields 50 % deflection, and with
+a meter calibrated 12–240 that is PWM 126. If the needle misses the halfway mark, the
+displayed intermediate values say immediately whether the range or the calibration is
+at fault.
+
+**Files:**
+- Create: `AnalogHwMonitor.Core/ChannelPipeline.cs`
+- Create: `AnalogHwMonitor.Tests/ChannelPipelineTests.cs`
+- Modify: `AnalogHwMonitor.Core/MonitorService.cs`
+- Modify: `AnalogHwMonitor.App/ChannelRowControl.cs`
+- Modify: `AnalogHwMonitor.App/SettingsForm.cs`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `ChannelMapper.ToPercent`, `MeterCalibration.ToPwm`, `ChannelConfig`,
+  `SensorDescriptor.Unit`.
+- Produces:
+  - `static class ChannelPipeline` with
+    `static (double Percent, byte Pwm) Evaluate(double value, double min, double max, int minPwm, int maxPwm)`.
+  - `ChannelRowControl` gains a simulated-value input and raises its existing
+    `TestPwmChanged` event with the computed PWM. Its public surface otherwise stays
+    as it is: the constructor, `TestPwmChanged`, `ApplyTo`, `ShowReading`, `StopTest`.
+
+**Why a new Core type.** `MonitorService.Tick` already composes the mapper and the
+calibration; the settings window is about to need the identical composition. Two
+copies of the same two-step arithmetic would drift, and the UI copy would be
+untestable. Extract it once, test it once, and call it from both.
+
+- [ ] **Step 1: Write the failing pipeline test**
+
+Create `AnalogHwMonitor.Tests/ChannelPipelineTests.cs`:
+
+```csharp
+using AnalogHwMonitor.Core;
+using Xunit;
+
+namespace AnalogHwMonitor.Tests;
+
+public class ChannelPipelineTests
+{
+    [Theory]
+    // A temperature channel ranged 30-90 on a meter calibrated 12-240.
+    [InlineData(30, 30, 90, 12, 240, 0, 12)]
+    [InlineData(60, 30, 90, 12, 240, 50, 126)]
+    [InlineData(90, 30, 90, 12, 240, 100, 240)]
+    // Below and above the range clamp, which is how a user discovers a bad range.
+    [InlineData(20, 30, 90, 12, 240, 0, 12)]
+    [InlineData(120, 30, 90, 12, 240, 100, 240)]
+    // A load channel on an uncalibrated meter.
+    [InlineData(75, 0, 100, 0, 255, 75, 191)]
+    // Inverted range and inverted calibration both stay legal.
+    [InlineData(45, 90, 30, 0, 255, 75, 191)]
+    [InlineData(100, 0, 100, 240, 12, 100, 12)]
+    // Degenerate range yields zero deflection, not a divide by zero.
+    [InlineData(50, 50, 50, 0, 255, 0, 0)]
+    public void Evaluate_RunsTheWholeChain(
+        double value, double min, double max, int minPwm, int maxPwm,
+        double expectedPercent, byte expectedPwm)
+    {
+        var (percent, pwm) = ChannelPipeline.Evaluate(value, min, max, minPwm, maxPwm);
+
+        Assert.Equal(expectedPercent, percent, 3);
+        Assert.Equal(expectedPwm, pwm);
+    }
+
+    [Fact]
+    public void Evaluate_MatchesTheTwoStepsItReplaces()
+    {
+        var percent = ChannelMapper.ToPercent(63.5, 30, 90);
+        var pwm = MeterCalibration.ToPwm(percent, 12, 240);
+
+        var result = ChannelPipeline.Evaluate(63.5, 30, 90, 12, 240);
+
+        Assert.Equal(percent, result.Percent, 6);
+        Assert.Equal(pwm, result.Pwm);
+    }
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `dotnet test --filter "FullyQualifiedName~ChannelPipelineTests"`
+Expected: build error, `ChannelPipeline` does not exist.
+
+- [ ] **Step 3: Write the pipeline**
+
+Create `AnalogHwMonitor.Core/ChannelPipeline.cs`:
+
+```csharp
+namespace AnalogHwMonitor.Core;
+
+/// <summary>
+/// The two steps every channel goes through, in one place: a sensor value becomes a
+/// deflection percentage, and that becomes a PWM byte for one particular meter. The
+/// tick loop and the settings window both need exactly this, and they must not be
+/// allowed to disagree about it.
+/// </summary>
+public static class ChannelPipeline
+{
+    public static (double Percent, byte Pwm) Evaluate(
+        double value, double min, double max, int minPwm, int maxPwm)
+    {
+        var percent = ChannelMapper.ToPercent(value, min, max);
+        return (percent, MeterCalibration.ToPwm(percent, minPwm, maxPwm));
+    }
+}
+```
+
+- [ ] **Step 4: Route `MonitorService` through it**
+
+In `AnalogHwMonitor.Core/MonitorService.cs`, replace the inline pair of calls in
+`Tick()` with one `ChannelPipeline.Evaluate` call. Behaviour must not change: a
+missing sensor still sends PWM 0 rather than the calibrated zero, test-mode overrides
+still bypass the chain entirely, and the reading still reports the percentage. All
+existing `MonitorServiceTests` must pass untouched.
+
+- [ ] **Step 5: Run the pipeline and monitor tests**
+
+Run: `dotnet test --filter "FullyQualifiedName~ChannelPipelineTests|FullyQualifiedName~MonitorServiceTests"`
+Expected: PASS, the new tests plus the existing monitor tests, none of them edited.
+
+- [ ] **Step 6: Add the simulated-value input to the row**
+
+In `AnalogHwMonitor.App/ChannelRowControl.cs`, beside the existing Test slider, add a
+text box for a value in the sensor's own unit, a label showing that unit, and an Apply
+button. Requirements:
+
+- The input and its button follow the Test switch exactly as the slider does: enabled
+  only while Test is on, disabled by `StopTest()`.
+- Applying computes the PWM with `ChannelPipeline.Evaluate`, using the row's CURRENT
+  on-screen `Min`, `Max`, `MinPwm` and `MaxPwm` — not the values last saved to disk.
+  Editing a range and immediately re-applying is the point of the feature.
+- The computed PWM is raised through the existing `TestPwmChanged` event, and the
+  slider moves to match, so the two controls never disagree about what the meter is
+  being told.
+- A result label shows the whole chain, for example `60 °C -> 50 % -> PWM 126`, so a
+  needle that lands wrong tells the user whether the range or the calibration is to
+  blame.
+- The unit comes from the selected `SensorDescriptor.Unit`, updating when the sensor
+  dropdown changes, and is blank for `(none)`, an unavailable sensor, or a sensor
+  whose unit is empty.
+- Parsing accepts both a comma and a full stop as the decimal separator, regardless of
+  the machine's locale — this project is used on a Slovak-locale machine where sensors
+  display as `62,1`, and a user who types `62.1` must not be told it is invalid. Try
+  the current culture first, then the invariant one.
+- Unparseable input changes nothing: no frame, no slider movement, and the result
+  label says the value could not be read. It must not throw.
+
+- [ ] **Step 7: Close the Detect re-entrancy window**
+
+While in `AnalogHwMonitor.App/SettingsForm.cs`: the final review found that
+`Application.DoEvents()` sits below the `_link.IsConnected` check in `Detect()`. It
+pumps a pending timer message, which can run a tick that reconnects the link, after
+which the scan probes the port the application now holds and reports that no device
+answered — the very symptom Detect was fixed for. Move the `DoEvents` call above the
+check, or re-test `_link.IsConnected` after it, whichever reads better.
+
+- [ ] **Step 8: Build and run the whole suite**
+
+Run: `dotnet build` then `dotnet test`
+Expected: build clean; 95 existing tests plus the new pipeline tests, 6 skipped.
+
+- [ ] **Step 9: Update the README**
+
+In the calibration section, add the verification step: after storing both ends, type
+values in the sensor's own unit and check where the needle lands, using the displayed
+chain to tell a bad range from a bad calibration.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add AnalogHwMonitor.Core AnalogHwMonitor.App AnalogHwMonitor.Tests README.md
+git commit -m "feat: simulate a sensor value while calibrating a meter"
+```
+
+- [ ] **Step 11: Owner verification (deferred)**
+
+With the meters connected: tick Test on the CPU temperature row, type `30`, `60` and
+`90`, and confirm the needle lands at zero, halfway and full scale. Then set Max to 70
+without saving, type `60` again, and confirm the needle jumps higher — proving the
+calculation follows the on-screen range rather than the saved one.
