@@ -7,15 +7,15 @@ namespace AnalogHwMonitor.Core;
 /// </summary>
 public static class SensorDefaults
 {
-    private sealed record Rule(SensorKind Kind, string[] NamePatterns, string IdHint);
+    private sealed record Rule(SensorKind Kind, string[] NamePatterns, string IdHint, string[]? Exclude = null);
 
     private static readonly Rule[] Rules =
     {
         new(SensorKind.Load,        new[] { "CPU Total", "CPU" },                              "cpu"),
-        new(SensorKind.Load,        new[] { "GPU Core", "GPU" },                               "gpu"),
+        new(SensorKind.Load,        new[] { "GPU Core", "GPU" },                               "gpu", Exclude: new[] { "Memory" }),
         new(SensorKind.Load,        new[] { "Memory" },                                        "/ram"),
         new(SensorKind.Temperature, new[] { "CPU Package", "Tctl", "Core Average", "CPU" },    "cpu"),
-        new(SensorKind.Temperature, new[] { "GPU Core", "GPU" },                               "gpu"),
+        new(SensorKind.Temperature, new[] { "GPU Core", "GPU" },                               "gpu", Exclude: new[] { "Memory" }),
     };
 
     public static void AssignSensors(AppConfig config, IReadOnlyList<SensorDescriptor> sensors)
@@ -45,6 +45,17 @@ public static class SensorDefaults
             : rule.IdHint.StartsWith('/')
                 ? new List<SensorDescriptor>()
                 : sensors.Where(s => s.Kind == rule.Kind).ToList();
+
+        // A rule's Exclude list rules out sensors by name regardless of how broad its
+        // patterns are, e.g. the GPU rules must never bind to a "GPU Memory" sensor
+        // even though "GPU" alone is one of their patterns.
+        if (rule.Exclude is { Length: > 0 })
+        {
+            candidates = candidates
+                .Where(s => !rule.Exclude.Any(excluded =>
+                    s.Name.Contains(excluded, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
 
         foreach (var pattern in rule.NamePatterns)
         {

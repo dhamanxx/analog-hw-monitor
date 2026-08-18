@@ -91,4 +91,23 @@ public class SensorDefaultsTests
     {
         Assert.Equal("AMD Ryzen 7 5800X · CPU Total", AmdMachine[0].Display);
     }
+
+    [Fact]
+    public void AssignSensors_NeverBindsGpuChannelsToAMemorySensor()
+    {
+        var gpuWithOnlyMemorySensors = new[]
+        {
+            new SensorDescriptor("/amdcpu/0/load/0",        "CPU Total",        "AMD Ryzen 7 5800X", SensorKind.Load,        "%"),
+            new SensorDescriptor("/amdcpu/0/temperature/0", "Core (Tctl/Tdie)", "AMD Ryzen 7 5800X", SensorKind.Temperature, "°C"),
+            new SensorDescriptor("/gpu-nvidia/0/load/3",    "GPU Memory",       "NVIDIA RTX 3070",    SensorKind.Load,        "%"),
+            new SensorDescriptor("/gpu-nvidia/0/temperature/1", "GPU Memory Junction Temperature", "NVIDIA RTX 3070", SensorKind.Temperature, "°C"),
+            new SensorDescriptor("/ram/load/0",             "Memory",           "Generic Memory",     SensorKind.Load,        "%"),
+        };
+        var config = AppConfig.CreateDefault();
+
+        SensorDefaults.AssignSensors(config, gpuWithOnlyMemorySensors);
+
+        Assert.Null(config.Channels[1].SensorId);
+        Assert.Null(config.Channels[4].SensorId);
+    }
 }
