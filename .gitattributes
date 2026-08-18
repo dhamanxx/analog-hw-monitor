@@ -1,0 +1,3 @@
+# .ico files are a binary container format (ICONDIR + PNG payloads); autocrlf
+# line-ending translation would corrupt them.
+*.ico binary
