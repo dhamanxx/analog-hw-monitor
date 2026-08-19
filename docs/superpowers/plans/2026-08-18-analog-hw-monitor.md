@@ -4127,3 +4127,75 @@ With the meters connected: tick Test on the CPU temperature row, type `30`, `60`
 `90`, and confirm the needle lands at zero, halfway and full scale. Then set Max to 70
 without saving, type `60` again, and confirm the needle jumps higher — proving the
 calculation follows the on-screen range rather than the saved one.
+
+---
+
+### Task 16: Say so when PawnIO is missing
+
+Not yet implemented — recorded after a day spent diagnosing dead temperature channels
+on two different machines.
+
+LibreHardwareMonitorLib 0.9.6 has dropped WinRing0 entirely and reaches temperatures,
+clocks, power and the motherboard's own sensors only through the PawnIO kernel driver.
+It carries the bytecode modules itself, finds the driver through
+`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO` and opens
+`\\?\GLOBALROOT\Device\PawnIO` — but it ships no installer and never prompts. Only
+LibreHardwareMonitor's own GUI application bundles the setup program and offers to run
+it; anything consuming the library, this project included, gets silence.
+
+The failure is invisible in the worst way. Nothing throws, nothing logs. Sensors are
+still discovered and still selectable, they simply return `NULL` on Intel or a constant
+`0.0` on AMD, so a channel looks correctly wired and merely cold. Two machines and
+several hours went into working that out, and the application never said a word.
+
+**This task is about the silence, not about the driver.** Do not bundle the PawnIO
+installer: it would mean shipping a third-party kernel driver, vouching for it, and
+freezing a copy that ages while the signed build at pawnio.eu keeps moving.
+
+**Files:**
+- Create: `AnalogHwMonitor.Core/PawnIoDetector.cs`
+- Create: `AnalogHwMonitor.Tests/PawnIoDetectorTests.cs`
+- Modify: `AnalogHwMonitor.App/Program.cs`
+- Modify: `AnalogHwMonitor.App/SettingsForm.cs`
+
+**Interfaces:**
+- Produces: `sealed class PawnIoDetector` with
+  `PawnIoDetector(string subKey = PawnIoDetector.UninstallSubKey)`,
+  `const string UninstallSubKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO"`,
+  `const string DownloadUrl = "https://pawnio.eu"`,
+  and `PawnIoStatus Detect()` returning a record carrying `bool Installed` and
+  `string? Version`.
+- Follow `StartupRegistration`'s shape: it already takes an injectable subkey so its
+  tests can use a scratch key instead of the real one. Do the same here — the tests
+  must never depend on whether the machine running them happens to have PawnIO.
+
+**Requirements:**
+
+- Read the SAME registry key the library reads. Not the service entry under
+  `CurrentControlSet\Services\PawnIO`, and not the presence of `C:\Program Files\PawnIO`
+  — using the library's own signal is what guarantees the report can never contradict
+  the library's behaviour. Note that `Get-Service` does not list PawnIO at all, because
+  it is a kernel driver rather than a Win32 service; that dead end is worth a comment.
+- `Detect()` must never throw. A missing key, a denied read or a malformed value all
+  mean "not installed", the same way the rest of this codebase treats the unreadable.
+- Log the outcome once at startup, in `Program.cs`, either way: the version when it is
+  present, and when it is absent a line naming what is lost and where to get it.
+- Surface it in the settings window too, since that is where someone stares at a dead
+  channel wondering why. Put it where the existing status and simulation lines live.
+  A static line, not a dialog, and not repeated per tick — the application still works
+  without PawnIO and must not nag.
+- Word it accurately. Without PawnIO the meters still run: CPU and GPU load and memory
+  come from Windows performance counters and need no driver, and an ACPI thermal zone
+  can still supply temperatures on machines that expose one. What is lost is CPU and
+  GPU temperatures from the vendor sensors, clocks, power, and the motherboard's own
+  sensors. Do not tell the user the application is broken when it is not.
+- Optionally, one button that opens `DownloadUrl` in the default browser. Nothing is
+  downloaded or executed by this application.
+
+**Tests:** point the detector at a scratch subkey under `HKCU`, and cover a key that is
+absent, a key present with a `DisplayVersion`, and a key present without one. Clean up
+afterwards, as `StartupRegistrationTests` does.
+
+**Verification:** on a machine without PawnIO, `log.txt` says so on the first line of
+the session and the settings window shows the hint. Installing PawnIO and restarting
+turns both into the version line.
