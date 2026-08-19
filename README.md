@@ -224,6 +224,7 @@ with defaults, so a bad edit costs you your settings but never a startup loop.
 | `AnalogHwMonitor.Tests/` | xUnit tests for the core, using fake sensors and a fake serial link |
 | `arduino/analog_hw_monitor/` | The Arduino sketch |
 | `tools/IconGenerator/` | Draws `AnalogHwMonitor.App/appicon.ico` and `appicon-warning.ico` — not part of the app build, run by hand when the icon needs regenerating |
+| `tools/SensorDump/` | Diagnostic: dumps every sensor LibreHardwareMonitor sees, with values and identifiers |
 | `docs/superpowers/specs/` | Design documents |
 
 Regenerate the icons after changing the dial's design:
