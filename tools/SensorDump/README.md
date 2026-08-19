@@ -35,28 +35,41 @@ completely different here.
 **Everything reads plausibly.** Nothing is wrong with the machine — find the sensor you
 want and select it in the settings window by the name shown here.
 
-**Every temperature, clock and power is `NULL` while loads still work.** The kernel
-driver did not load. Loads come from Windows performance counters and need no driver;
-temperatures come from model-specific registers and do. Elevation is not the missing
-piece — something is blocking the driver, typically Memory Integrity:
+**Every temperature, clock and power is `NULL` while loads still work**, or on AMD
+several read a constant `0.0` and the `[Motherboard]` section is empty. Same cause,
+two faces: the kernel driver is not being reached. Loads come from Windows performance
+counters and need no driver; temperatures come from model-specific registers and do.
+Elevation is not the missing piece.
+
+**Check PawnIO first.** Version 0.9.6 of the library dropped WinRing0 entirely and
+talks only to PawnIO — there is no `WinRing0` string left in the assembly. It carries
+the bytecode modules itself (`IntelMSR`, `AMDFamily17`, `RyzenSMU`, `LpcIO`), finds the
+driver through the registry and opens `\\?\GLOBALROOT\Device\PawnIO`, but it contains no installer and never
+prompts. Running LibreHardwareMonitor's own GUI offers to install it; consuming the
+library does not. Install it from https://pawnio.eu, then check:
 
 ```powershell
-Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Name Enabled
+Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO" -ErrorAction SilentlyContinue |
+  Select-Object DisplayName, DisplayVersion
 ```
 
-**Temperatures read a constant `0.0` rather than `NULL`, voltages are all identical,
-powers are all zero, and the motherboard section is empty.** The same underlying
-problem wearing a different face: the reads are failing and returning zero instead of
-nothing. On AMD this also shows up as per-core clocks reading `NULL` beside effective
-clocks reading `0.0`. Check the vulnerable-driver blocklist and whether another
-monitoring tool holds the driver — access to the AMD SMU is exclusive, so HWiNFO,
-HWMonitor, Ryzen Master, Armoury Crate or a board vendor's utility running in the
-background will starve this one:
+`Get-Service` will not find it — it is a kernel driver, not a Win32 service.
 
-```powershell
-Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config" -Name VulnerableDriverBlocklistEnable
-Get-Process | Where-Object { $_.ProcessName -match 'HWiNFO|Ryzen|Afterburner|GPU-Z|CPUID|HWMonitor|Armoury|EasyTune|GCC|AIDA' }
-```
+**The quickest tell** is the `[Motherboard]` section. Its sensors are read through the
+`LpcIO` module, so if it lists nothing at all while loads work, the driver is not being
+reached and a dead CPU temperature is a symptom rather than the problem. Once PawnIO is
+installed, temperatures, clocks, package power and the board's own sensors all appear
+together.
+
+**Comparing against HWiNFO or HWMonitor proves nothing here.** They ship their own
+drivers, so they keep reading correctly whether or not PawnIO is installed. Their
+success tells you the hardware is fine, not that this library can reach it.
+
+**If PawnIO is installed and a temperature still reads `0.0`,** that is a library bug
+rather than a configuration problem — see
+https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/issues/2348 for the AMD
+case. Access to the AMD SMU is also exclusive, so close HWiNFO, HWMonitor, Ryzen
+Master, Armoury Crate or a board vendor's utility before concluding anything.
 
 **No temperature exists at all for an integrated GPU.** Nothing to find; the hardware
 does not report one. Intel integrated graphics report load as `D3D 3D` rather than

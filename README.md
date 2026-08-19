@@ -76,9 +76,32 @@ connection watchdog.
 - .NET 8 SDK to build, .NET 8 Desktop Runtime to run
 - Arduino IDE (or `arduino-cli`) to flash the sketch
 
-**The application must run as administrator.** LibreHardwareMonitor loads a ring0
-driver to reach the hardware sensors; without elevation most temperature readings
-are simply absent. The app manifest requests elevation, so Windows will prompt.
+**The application must run as administrator.** The app manifest requests elevation,
+so Windows will prompt. Without it, sensor access fails outright.
+
+### PawnIO — required for temperatures on most machines
+
+Elevation alone is not enough. LibreHardwareMonitor reaches temperatures, clock
+speeds and power draw through a kernel driver, and the library this project uses
+(0.9.6) has dropped the old WinRing0 driver entirely in favour of
+[PawnIO](https://github.com/namazso/PawnIO) — a signed, Memory-Integrity-compatible
+driver that runs sandboxed bytecode instead of granting raw hardware access. The
+library carries the bytecode modules itself (`IntelMSR`, `AMDFamily17`, `RyzenSMU`,
+and `LpcIO` for the motherboard's own sensors) but it cannot install the driver.
+
+**Install PawnIO separately on every machine that should report temperatures.**
+Downloads are at [pawnio.eu](https://pawnio.eu); the source is GPL-2.0. The library
+finds it through `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO`
+and then talks to `\\?\GLOBALROOT\Device\PawnIO`. Running LibreHardwareMonitor's own
+GUI application offers to install it; this project ships only the library, which can
+use the driver but cannot put it there.
+
+Without PawnIO the application still runs and still drives the meters — CPU and GPU
+load and memory usage come from Windows performance counters and need no driver at
+all. What you lose is every temperature, every clock, every power reading and the
+motherboard's own sensors. They do not report an error; they read `NULL`, or on AMD
+a constant `0.0`, which is why a temperature channel can look wired up and dead at
+the same time. When that happens, `tools/SensorDump` tells the causes apart in one run.
 
 ## Getting started
 
