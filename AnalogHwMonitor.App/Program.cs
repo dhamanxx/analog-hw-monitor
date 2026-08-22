@@ -13,6 +13,10 @@ internal static class Program
         var log = new FileLog(Path.Combine(directory, "log.txt"));
         var store = new ConfigStore(Path.Combine(directory, "config.json"));
 
+        // TEMPORARY: one line per minute into log.txt saying where a tick's time goes, split
+        // by sensor source and by hardware. Remove together with TickProfiler.
+        var profiler = new TickProfiler(log, TimeSpan.FromMinutes(1));
+
         var loaded = store.Load();
         if (loaded.Outcome != ConfigLoadOutcome.Loaded)
         {
@@ -42,7 +46,7 @@ internal static class Program
             }
         }
 
-        TryAddSource("LibreHardwareMonitor", () => new LibreHardwareSensorSource());
+        TryAddSource("LibreHardwareMonitor", () => new LibreHardwareSensorSource { Profiler = profiler });
         TryAddSource("ACPI thermal zones", () => new AcpiThermalSensorSource(log));
 
         if (sources.Count == 0)
@@ -75,12 +79,9 @@ internal static class Program
 
         // From here on the composite absorbs and latches every source fault, so a
         // source that dies later costs its own readings and nothing else. The throttle
-        // sits outside it because VU meter mode ticks at 25 Hz and the hardware behind
-        // LibreHardwareMonitor must still only be polled once a second.
-        // TEMPORARY: one line per minute into log.txt saying where a tick's time goes, and
-        // which sensor source owns the refresh. Remove together with TickProfiler.
-        var profiler = new TickProfiler(log, TimeSpan.FromMinutes(1));
-
+        // sits outside it because the tick runs at 25 Hz in VU meter mode while the
+        // hardware behind LibreHardwareMonitor must be polled far more rarely — see
+        // ThrottledSensorSource.MinimumInterval for the measured reason it is 3 s.
         ISensorSource sensors = new ThrottledSensorSource(
             new CompositeSensorSource(log, sources.ToArray()) { Profiler = profiler });
         sensors.Refresh();
