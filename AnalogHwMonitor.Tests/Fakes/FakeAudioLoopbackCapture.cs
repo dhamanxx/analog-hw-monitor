@@ -35,7 +35,7 @@ public sealed class FakeAudioLoopbackCapture : IAudioLoopbackCapture
 
     public AudioFormat? Format { get; private set; }
 
-    public string? DeviceId { get; private set; }
+    public string? DeviceId { get; set; }
 
     public string? DeviceName { get; set; } = "Fake Audio";
 
@@ -74,14 +74,6 @@ public sealed class FakeAudioLoopbackCapture : IAudioLoopbackCapture
     {
         DisposeCount++;
         Stop();
-    }
-
-    /// <summary>Delivers a constant amplitude on every channel for a given duration.</summary>
-    public void DeliverConstant(double seconds, float amplitude)
-    {
-        var samples = new float[(int)(seconds * SampleRate) * ChannelCount];
-        Array.Fill(samples, amplitude);
-        Deliver(samples);
     }
 
     /// <summary>Delivers a full-scale sine on every channel, the signal a VU meter is

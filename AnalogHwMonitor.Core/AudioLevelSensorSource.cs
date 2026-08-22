@@ -101,11 +101,16 @@ public sealed class AudioLevelSensorSource : ISensorSource
         }
 
         // Headphones in, speakers out: the daily case, and the one a VU meter notices
-        // immediately because both needles go dead.
+        // immediately because both needles go dead. But the same comparison also catches
+        // a capture that died under us — the adapter clears its device id on an
+        // unsolicited stop, so a mismatch here means either the default device moved or
+        // the capture is gone, and both want the same response. Narrowing this condition
+        // to require a non-null device id would silently delete the exclusive-mode
+        // recovery: it would pass every existing test and stop noticing the second case.
         var current = _capture.CurrentDefaultDeviceId;
         if (current is not null && current != _capture.DeviceId)
         {
-            _log.Write($"Default audio device changed to {current}; restarting the audio capture.");
+            _log.Write($"The audio capture is no longer on the default device ({current}); restarting it.");
             Stop();   // the next Read starts it again, on the new device
         }
     }

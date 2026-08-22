@@ -305,8 +305,9 @@ The needles are meant to tell you when they are lying.
   says why; the app keeps retrying every five seconds on its own.
 - **Both VU needles drop to zero while VU meter mode is on.** Either there is no
   audio output device, or another application is holding the default endpoint in
-  exclusive mode. Both rows go red in the settings window, and `log.txt` says
-  which of the two it was.
+  exclusive mode. Both rows go red in the settings window, and `log.txt` records
+  the reason Windows gave for refusing the capture. If the endpoint frees up
+  again, the app keeps retrying every second on its own.
 - **A VU needle stays parked instead of falling to zero when playback stops.**
   It should not: WASAPI stops delivering audio entirely the moment nothing is
   playing, and the source decays the level itself once 150 ms pass without a

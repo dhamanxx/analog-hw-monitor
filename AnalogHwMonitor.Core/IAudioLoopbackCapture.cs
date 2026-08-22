@@ -43,7 +43,14 @@ public interface IAudioLoopbackCapture : IDisposable
     /// </summary>
     AudioFormat? Format { get; }
 
-    /// <summary>Endpoint id of the device being captured, or null while stopped.</summary>
+    /// <summary>
+    /// Endpoint id of the device being captured, or null while stopped. An implementation
+    /// must also clear this when capture stops for a reason the caller did not ask for —
+    /// another application taking the endpoint into exclusive mode, a format change, or
+    /// the sample handler throwing — because that is what lets a consumer's device
+    /// comparison notice a capture that died underneath it. That noticing is the
+    /// specification's promised self-recovery from an endpoint held in exclusive mode.
+    /// </summary>
     string? DeviceId { get; }
 
     /// <summary>

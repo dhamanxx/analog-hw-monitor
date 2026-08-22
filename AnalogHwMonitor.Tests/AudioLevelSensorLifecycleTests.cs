@@ -160,6 +160,36 @@ public class AudioLevelSensorLifecycleTests
         }
     }
 
+    /// <summary>
+    /// The specification's exclusive-mode recovery, which nothing else exercises. When
+    /// another application takes the endpoint while we are running, the capture dies and
+    /// the adapter clears its device id; the health check must read that as a reason to
+    /// restart, exactly as it reads a default-device change. Narrowing the comparison to
+    /// require a non-null device id would pass every other test in this file and delete
+    /// this behaviour.
+    /// </summary>
+    [Fact]
+    public void Refresh_RestartsWhenTheCaptureDiedUnderUs()
+    {
+        var (source, capture, _) = Build();
+        using (source)
+        {
+            source.Read(AudioSensorIds.Left);
+            Assert.Equal(1, capture.StartCount);
+
+            // What an unsolicited stop leaves behind: the default device is unchanged,
+            // but the capture is no longer on it.
+            capture.DeviceId = null;
+            source.Refresh();
+
+            Assert.Equal(1, capture.StopCount);
+
+            source.Read(AudioSensorIds.Left);
+
+            Assert.Equal(2, capture.StartCount);
+        }
+    }
+
     [Fact]
     public void Dispose_StopsAndDisposesTheCapture()
     {

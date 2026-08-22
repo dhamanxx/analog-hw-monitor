@@ -71,7 +71,39 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
 
     public string? DeviceId { get; private set; }
 
-    public string? DeviceName { get; private set; }
+    private string? _deviceName;
+
+    /// <summary>
+    /// Falls back to a one-off enumeration when nothing has started or polled the
+    /// default endpoint yet — e.g. the settings window's first <c>Discover()</c> with
+    /// VU mode off and every channel already assigned, when neither TryStart nor
+    /// CurrentDefaultDeviceId has run. A COM call here is fine: Discover is called on
+    /// window open and at startup, not on the audio callback path or the once-a-second
+    /// tick that VolumeDb must stay allocation- and call-free for. Returns null on any
+    /// failure rather than throwing — the consumer already falls back to a generic label.
+    /// </summary>
+    public string? DeviceName
+    {
+        get
+        {
+            if (_deviceName is not null)
+            {
+                return _deviceName;
+            }
+
+            try
+            {
+                var enumerator = _enumerator ??= new MMDeviceEnumerator();
+                using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                return device.FriendlyName;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+        private set => _deviceName = value;
+    }
 
     public double VolumeDb => Volatile.Read(ref _volumeDb);
 
@@ -269,7 +301,19 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
             DeviceId = null;
         }
 
-        _stopped?.Set();
+        // Narrowed by nulling the field before disposing it, but not closed: the load,
+        // the null test and the call are three instructions, and a teardown whose wait
+        // times out in between disposes the handle under us. NAudio raises this event
+        // outside its capture thread's try/catch, so the exception would be unhandled
+        // on a background thread and would end the process. Taking _gate here instead
+        // would deadlock against the Join inside StopLocked.
+        try
+        {
+            _stopped?.Set();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     /// <summary>
