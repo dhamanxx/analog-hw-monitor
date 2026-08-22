@@ -24,17 +24,49 @@ public sealed class SettingsForm : Form
 
     private readonly List<ChannelRowControl> _rows = new();
 
+    private readonly CheckBox _vuMode = new() { Text = "VU meter mode", AutoSize = true };
+    private readonly CheckBox _compensateVolume = new() { Text = "Compensate Windows volume", AutoSize = true };
+    private readonly Action<bool> _setVuMode;
+
+    // AutoScroll rather than a plain Panel: a plain Panel with Dock = Fill forces every
+    // docked child to the visible viewport size, so overflow in either dimension is
+    // simply invisible rather than reachable. AutoScroll is what turns "doesn't fit"
+    // into a scrollbar instead of a silently missing channel or a silently clipped
+    // column — regardless of how the sizing numbers turn out to be wrong on some
+    // future machine.
+    private readonly FlowLayoutPanel _rowsPanel = new()
+    {
+        Dock = DockStyle.Fill,
+        FlowDirection = FlowDirection.TopDown,
+        WrapContents = false,
+        AutoScroll = true,
+    };
+
+    /// <summary>
+    /// Guards against the toggle firing when the checkbox is being brought in line with
+    /// the configuration rather than clicked.
+    /// </summary>
+    private bool _followingConfig;
+
+    /// <summary>In VU meter mode the tick runs at 25 Hz. The numbers are worth watching
+    /// at that rate; the dropdowns and sliders around them are not worth repainting.</summary>
+    private const int RepaintIntervalMs = 200;
+
+    private long _lastRepaint;
+
     public SettingsForm(
         MonitorService monitor,
         SerialMeterLink link,
         ConfigStore store,
         ISensorSource sensors,
-        IAppLog log)
+        IAppLog log,
+        Action<bool> setVuMode)
     {
         _monitor = monitor;
         _link = link;
         _store = store;
         _log = log;
+        _setVuMode = setVuMode;
 
         Text = "Analog Hardware Monitor";
         Icon = AppIcons.Normal;
@@ -62,6 +94,27 @@ public sealed class SettingsForm : Form
         top.Controls.Add(detect);
         top.Controls.Add(_startWithWindows);
 
+        top.Controls.Add(_vuMode);
+        top.Controls.Add(_compensateVolume);
+
+        _vuMode.Checked = _monitor.Config.VuMode;
+        _compensateVolume.Checked = _monitor.Config.VuCompensateVolume;
+
+        // Applied on the click rather than on Save, so it matches the tray menu item and
+        // so a user who just wants to watch music does not have to find the Save button.
+        _vuMode.CheckedChanged += (_, _) =>
+        {
+            if (_followingConfig)
+            {
+                return;
+            }
+
+            _setVuMode(_vuMode.Checked);
+        };
+
+        _compensateVolume.CheckedChanged += (_, _) =>
+            _monitor.Config.VuCompensateVolume = _compensateVolume.Checked;
+
         var header = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -83,29 +136,7 @@ public sealed class SettingsForm : Form
             header.Controls.Add(new Label { Text = text, Width = width, TextAlign = ContentAlignment.MiddleLeft });
         }
 
-        // AutoScroll rather than a plain Panel: a plain Panel with Dock = Fill forces
-        // every docked child to the visible viewport size, so overflow in either
-        // dimension is simply invisible rather than reachable. AutoScroll is what
-        // turns "doesn't fit" into a scrollbar instead of a silently missing channel
-        // or a silently clipped column — regardless of how the numbers below turn out
-        // to be wrong on some future machine.
-        var rows = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            AutoScroll = true,
-        };
-
-        for (var i = 0; i < _monitor.Config.Channels.Count; i++)
-        {
-            var index = i;
-            var row = new ChannelRowControl(_monitor.Config.Channels[i], available);
-            row.TestPwmChanged += (_, pwm) => _monitor.SetTestPwm(index, pwm);
-            row.SimulationReported += (_, message) => _simulation.Text = message;
-            _rows.Add(row);
-            rows.Controls.Add(row);
-        }
+        BuildChannelRows(available);
 
         var buttons = new FlowLayoutPanel
         {
@@ -123,7 +154,7 @@ public sealed class SettingsForm : Form
         buttons.Controls.Add(close);
         buttons.Controls.Add(save);
 
-        Controls.Add(rows);
+        Controls.Add(_rowsPanel);
         Controls.Add(header);
         Controls.Add(top);
         Controls.Add(buttons);
@@ -132,9 +163,9 @@ public sealed class SettingsForm : Form
 
         // The window's size is derived from what its content actually measures,
         // rather than a pixel count that may or may not still be enough after the
-        // next change to a row. header.PreferredSize and rows.PreferredSize are real
-        // layout queries, not a guess baked in at design time. Querying
-        // rows.PreferredSize directly — rather than summing each row's own
+        // next change to a row. header.PreferredSize and _rowsPanel.PreferredSize are
+        // real layout queries, not a guess baked in at design time. Querying
+        // _rowsPanel.PreferredSize directly — rather than summing each row's own
         // PreferredSize — matters: summing the rows alone ignores the margins
         // FlowLayoutPanel puts between them and undercounts the real height by
         // exactly that much, which is the same kind of hand-arithmetic mistake that
@@ -142,8 +173,8 @@ public sealed class SettingsForm : Form
         // (top/buttons/status/simulation) keep their known-good heights. ClientSize
         // does the border/title-bar arithmetic that would otherwise have to be
         // hand-guessed.
-        var contentWidth = Math.Max(header.PreferredSize.Width, rows.PreferredSize.Width);
-        var contentHeight = top.Height + header.PreferredSize.Height + rows.PreferredSize.Height
+        var contentWidth = Math.Max(header.PreferredSize.Width, _rowsPanel.PreferredSize.Width);
+        var contentHeight = top.Height + header.PreferredSize.Height + _rowsPanel.PreferredSize.Height
             + buttons.Height + _simulation.Height + _status.Height;
 
         ClientSize = new Size(contentWidth, contentHeight);
@@ -356,6 +387,7 @@ public sealed class SettingsForm : Form
         var previousPort = _monitor.Config.ComPort;
         _monitor.Config.ComPort = SelectedPortName();
         _monitor.Config.StartWithWindows = _startWithWindows.Checked;
+        _monitor.Config.VuCompensateVolume = _compensateVolume.Checked;
 
         if (previousPort != _monitor.Config.ComPort)
         {
@@ -409,12 +441,58 @@ public sealed class SettingsForm : Form
         }
     }
 
+    private void BuildChannelRows(IReadOnlyList<SensorDescriptor> available)
+    {
+        for (var i = 0; i < _monitor.Config.Channels.Count; i++)
+        {
+            var index = i;
+            var row = new ChannelRowControl(_monitor.Config.Channels[i], available);
+            row.TestPwmChanged += (_, pwm) => _monitor.SetTestPwm(index, pwm);
+            row.SimulationReported += (_, message) => _simulation.Text = message;
+            _rows.Add(row);
+            _rowsPanel.Controls.Add(row);
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds the rows from the current configuration. VU meter mode changes two
+    /// channels' sensor, range and label, and every row read those values in its own
+    /// constructor — repainting would show the old ones. Rebuilding rather than
+    /// recreating the window keeps the window's position, its selected COM port and its
+    /// status line.
+    /// </summary>
+    public void ReloadChannels(IReadOnlyList<SensorDescriptor> available)
+    {
+        StopAllTests();
+
+        _rowsPanel.Controls.Clear();
+        foreach (var row in _rows)
+        {
+            row.Dispose();
+        }
+
+        _rows.Clear();
+        BuildChannelRows(available);
+
+        _followingConfig = true;
+        _vuMode.Checked = _monitor.Config.VuMode;
+        _followingConfig = false;
+    }
+
     private void OnUpdated(object? sender, IReadOnlyList<ChannelReading> readings)
     {
         if (!Visible)
         {
             return;
         }
+
+        var now = Environment.TickCount64;
+        if (now - _lastRepaint < RepaintIntervalMs)
+        {
+            return;
+        }
+
+        _lastRepaint = now;
 
         foreach (var reading in readings)
         {
