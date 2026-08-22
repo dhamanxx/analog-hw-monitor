@@ -106,6 +106,16 @@ public class AudioLevelSensorLifecycleTests
 
         Assert.Single(log.Lines);
         Assert.Contains("device-2", log.Lines[0]);
+
+        // The health check runs once a second for the life of the process. A single
+        // Refresh() proves the line is written; only a repeat proves it is not written
+        // again, which is the whole point of stopping the capture before logging.
+        for (var check = 0; check < 5; check++)
+        {
+            source.Refresh();
+        }
+
+        Assert.Single(log.Lines);
     }
 
     /// <summary>
