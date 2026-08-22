@@ -53,8 +53,16 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
     private int _bitsPerSample;
 
     // Set while StopLocked is tearing down, so the RecordingStopped handler can tell a stop
-    // we asked for from one NAudio raised on its own.
-    private bool _stopRequested;
+    // we asked for from one NAudio raised on its own. Written on the UI thread under
+    // _gate, read on the capture thread without one; volatile makes that safe by
+    // construction rather than by argument.
+    private volatile bool _stopRequested;
+
+    // Set once StartRecording has actually succeeded. StopLocked's wait exists to let an
+    // in-flight RecordingStopped arrive; on a capture that never started, nothing will ever
+    // raise it, and waiting the full timeout would stall the UI thread for two seconds on
+    // exactly the failure paths that retry once a second.
+    private bool _recording;
 
     private double _volumeDb;
     private bool _muted;
@@ -168,6 +176,7 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
                 _bitsPerSample = format.BitsPerSample;
 
                 capture.StartRecording();
+                _recording = true;
 
                 error = null;
                 return true;
@@ -349,7 +358,18 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
             try
             {
                 capture.StopRecording();
-                _stopped?.Wait(StopTimeout);
+
+                // StopRecording() is harmless on a capture that never started, but the
+                // wait is not: nothing raises RecordingStopped for a capture that was
+                // never recording, so waiting unconditionally would block for the full
+                // StopTimeout on every TryStart failure between construction and
+                // StartRecording (endpoint-volume throwing, StartRecording itself
+                // throwing) — exactly the failure paths AudioLevelSensorSource retries
+                // once a second.
+                if (_recording)
+                {
+                    _stopped?.Wait(StopTimeout);
+                }
             }
             catch (Exception)
             {
@@ -416,5 +436,6 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
         _encoding = default;
         _bitsPerSample = 0;
         _stopRequested = false;
+        _recording = false;
     }
 }
