@@ -23,6 +23,11 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
     /// </summary>
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(2);
 
+    // Serializes TryStart/Stop/Dispose against each other. Held across capture.Dispose()
+    // in StopLocked, which joins NAudio's capture thread while still holding the lock —
+    // safe only because the sample handler this class calls neither marshals to another
+    // thread and waits nor re-enters this adapter. Either would deadlock against the
+    // very thread the join is waiting on.
     private readonly object _gate = new();
 
     private MMDeviceEnumerator? _enumerator;
@@ -39,6 +44,17 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
     // and allocating a buffer per callback would be tens of kilobytes twenty-five times
     // a second — GC churn that looks exactly like a leak in Task Manager.
     private float[] _scratch = Array.Empty<float>();
+
+    // Cached from the format that TryStart validated. Read per callback, so they must not
+    // come from capture.WaveFormat: that getter rebuilds a WaveFormat from the extensible
+    // mix format on every get. Caching them here also keeps the validation in IsSupported
+    // and the conversion in OnData reading the same two values, so the two cannot drift.
+    private WaveFormatEncoding _encoding;
+    private int _bitsPerSample;
+
+    // Set while StopLocked is tearing down, so the RecordingStopped handler can tell a stop
+    // we asked for from one NAudio raised on its own.
+    private bool _stopRequested;
 
     private double _volumeDb;
     private bool _muted;
@@ -89,14 +105,43 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
 
                 var enumerator = _enumerator ??= new MMDeviceEnumerator();
                 var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                var capture = new NAudio.Wave.WasapiLoopbackCapture(device);
+
+                // Hand ownership to the field the moment the device exists, so StopLocked
+                // owns it from here on — including if anything below throws. Without this,
+                // a constructor or endpoint-volume failure leaks the device, and since
+                // AudioLevelSensorSource retries once a second, a persistently failing
+                // endpoint would leak one COM device per second.
+                _device = device;
+
+                // NAudio's WasapiCapture constructor captures SynchronizationContext.Current
+                // and posts RecordingStopped to it rather than raising it inline. TryStart
+                // runs on the WinForms timer tick, so capturing that context would make
+                // StopLocked's wait block the very thread that has to pump the post — a
+                // guaranteed two-second stall of the whole application on every stop.
+                // Constructed without a context, the callback arrives on the capture thread
+                // and the wait completes in tens of milliseconds.
+                var previousContext = SynchronizationContext.Current;
+                SynchronizationContext.SetSynchronizationContext(null);
+                NAudio.Wave.WasapiLoopbackCapture capture;
+                try
+                {
+                    capture = new NAudio.Wave.WasapiLoopbackCapture(device);
+                }
+                finally
+                {
+                    SynchronizationContext.SetSynchronizationContext(previousContext);
+                }
+
+                // Same reasoning as _device above: own it from construction so a failure a
+                // few lines below (e.g. the endpoint disappearing right as its volume
+                // interface is queried) does not leak an already-constructed IAudioClient.
+                _capture = capture;
 
                 var format = capture.WaveFormat;
                 if (!IsSupported(format))
                 {
-                    capture.Dispose();
-                    device.Dispose();
                     error = $"Unsupported audio format: {format.Encoding} {format.BitsPerSample}-bit.";
+                    StopLocked();
                     return false;
                 }
 
@@ -104,7 +149,7 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
                 _stopped = new ManualResetEventSlim(false);
 
                 _dataHandler = (_, e) => OnData(e);
-                _stoppedHandler = (_, _) => _stopped?.Set();
+                _stoppedHandler = (_, args) => OnRecordingStopped(args);
                 capture.DataAvailable += _dataHandler;
                 capture.RecordingStopped += _stoppedHandler;
 
@@ -116,11 +161,11 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
                 _volumeHandler = OnVolumeChanged;
                 device.AudioEndpointVolume.OnVolumeNotification += _volumeHandler;
 
-                _device = device;
-                _capture = capture;
                 DeviceId = device.ID;
                 DeviceName = device.FriendlyName;
                 Format = new AudioFormat(format.SampleRate, format.Channels);
+                _encoding = format.Encoding;
+                _bitsPerSample = format.BitsPerSample;
 
                 capture.StartRecording();
 
@@ -198,30 +243,56 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
     }
 
     /// <summary>
+    /// Fires on the capture thread whenever NAudio stops recording, whether we asked for
+    /// it (via StopLocked) or not — another application taking the endpoint into
+    /// exclusive mode, a format change, or the sample handler throwing all end capture
+    /// silently. When it is unsolicited, clearing DeviceId is the only signal this class
+    /// can raise without widening IAudioLoopbackCapture: the consumer's health check
+    /// compares CurrentDefaultDeviceId against DeviceId once a second, and a null
+    /// DeviceId next to a non-null default device id reads as "device changed," which
+    /// makes the consumer stop and the next Read start a fresh capture. That is the
+    /// specification's promised self-recovery from an endpoint held in exclusive mode.
+    /// </summary>
+    private void OnRecordingStopped(StoppedEventArgs args)
+    {
+        if (!_stopRequested)
+        {
+            DeviceId = null;
+        }
+
+        _stopped?.Set();
+    }
+
+    /// <summary>
     /// Runs on NAudio's capture thread. The buffer belongs to NAudio and is recycled, so
     /// the float case reinterprets it in place and the PCM cases convert into a scratch
     /// array that is allocated once and grown, never per callback.
+    ///
+    /// Reads <see cref="_encoding"/> and <see cref="_bitsPerSample"/> rather than
+    /// <c>capture.WaveFormat</c>: that getter reconstructs a WaveFormat from the WASAPI
+    /// mix format's WaveFormatExtensible on every call — measured at 40 bytes per
+    /// callback — which is exactly the per-buffer allocation this class exists to avoid.
     /// </summary>
     private void OnData(WaveInEventArgs e)
     {
         var handler = _onSamples;
-        var capture = _capture;
 
-        if (handler is null || capture is null || e.BytesRecorded <= 0)
+        if (handler is null || e.BytesRecorded <= 0)
         {
             return;
         }
 
-        var format = capture.WaveFormat;
+        var encoding = _encoding;
+        var bitsPerSample = _bitsPerSample;
         var bytes = e.Buffer.AsSpan(0, e.BytesRecorded);
 
-        if (format.Encoding == WaveFormatEncoding.IeeeFloat)
+        if (encoding == WaveFormatEncoding.IeeeFloat)
         {
             handler(MemoryMarshal.Cast<byte, float>(bytes));
             return;
         }
 
-        var bytesPerSample = format.BitsPerSample / 8;
+        var bytesPerSample = bitsPerSample / 8;
         var count = e.BytesRecorded / bytesPerSample;
 
         if (_scratch.Length < count)
@@ -232,11 +303,23 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
         for (var i = 0; i < count; i++)
         {
             var sample = bytes.Slice(i * bytesPerSample, bytesPerSample);
-            _scratch[i] = format.BitsPerSample switch
+            _scratch[i] = bitsPerSample switch
             {
                 16 => MemoryMarshal.Read<short>(sample) / 32_768f,
+
+                // Little-endian 24-bit has no native integer type: pack the three bytes
+                // into the top of an int, then use the arithmetic right shift (>>, not
+                // >>>) to sign-extend from bit 23 back down to bit 0. The divisor is
+                // 2^23, the full-scale magnitude of a signed 24-bit sample.
                 24 => ((sample[2] << 16 | sample[1] << 8 | sample[0]) << 8 >> 8) / 8_388_608f,
-                _ => MemoryMarshal.Read<int>(sample) / 2_147_483_648f,
+
+                // Explicit rather than a catch-all default: IsSupported restricts PCM to
+                // 16/24/32-bit today, but if that ever grows to include 8-bit, an
+                // unmatched width here must produce silence rather than an
+                // ArgumentOutOfRangeException from MemoryMarshal.Read on the capture
+                // thread.
+                32 => MemoryMarshal.Read<int>(sample) / 2_147_483_648f,
+                _ => 0f,
             };
         }
 
@@ -252,6 +335,13 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
     /// </summary>
     private void StopLocked()
     {
+        // Marks this teardown as solicited before touching anything, so a
+        // RecordingStopped that lands mid-StopRecording (or from an unsolicited stop
+        // that races with a caller-initiated one) is not mistaken for the unsolicited
+        // kind and does not clear DeviceId out from under a teardown already in
+        // progress.
+        _stopRequested = true;
+
         var capture = _capture;
 
         if (capture is not null)
@@ -300,16 +390,31 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
             }
         }
 
-        _stopped?.Dispose();
+        // Null the field before disposing: OnRecordingStopped (and anything else reading
+        // _stopped) must never observe a disposed-but-non-null handle. NAudio raises
+        // RecordingStopped outside CaptureThread's own try/catch, so Set() throwing
+        // ObjectDisposedException there would be an unhandled exception on a background
+        // thread and would take the process down.
+        var stopped = _stopped;
+        _stopped = null;
+        try
+        {
+            stopped?.Dispose();
+        }
+        catch (Exception)
+        {
+        }
 
         _capture = null;
         _device = null;
-        _stopped = null;
         _onSamples = null;
         _dataHandler = null;
         _stoppedHandler = null;
         _volumeHandler = null;
         Format = null;
         DeviceId = null;
+        _encoding = default;
+        _bitsPerSample = 0;
+        _stopRequested = false;
     }
 }
