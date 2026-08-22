@@ -13,10 +13,6 @@ internal static class Program
         var log = new FileLog(Path.Combine(directory, "log.txt"));
         var store = new ConfigStore(Path.Combine(directory, "config.json"));
 
-        // TEMPORARY: one line per minute into log.txt saying where a tick's time goes, split
-        // by sensor source and by hardware. Remove together with TickProfiler.
-        var profiler = new TickProfiler(log, TimeSpan.FromMinutes(1));
-
         var loaded = store.Load();
         if (loaded.Outcome != ConfigLoadOutcome.Loaded)
         {
@@ -46,7 +42,7 @@ internal static class Program
             }
         }
 
-        TryAddSource("LibreHardwareMonitor", () => new LibreHardwareSensorSource { Profiler = profiler });
+        TryAddSource("LibreHardwareMonitor", () => new LibreHardwareSensorSource());
         TryAddSource("ACPI thermal zones", () => new AcpiThermalSensorSource(log));
 
         if (sources.Count == 0)
@@ -82,8 +78,7 @@ internal static class Program
         // sits outside it because the tick runs at 25 Hz in VU meter mode while the
         // hardware behind LibreHardwareMonitor must be polled far more rarely — see
         // ThrottledSensorSource.MinimumInterval for the measured reason it is 3 s.
-        ISensorSource sensors = new ThrottledSensorSource(
-            new CompositeSensorSource(log, sources.ToArray()) { Profiler = profiler });
+        ISensorSource sensors = new ThrottledSensorSource(new CompositeSensorSource(log, sources.ToArray()));
         sensors.Refresh();
 
         var hadUnassignedChannels = config.Channels.Any(c => string.IsNullOrEmpty(c.SensorId));
@@ -104,7 +99,7 @@ internal static class Program
         }
 
         var link = new SerialMeterLink(new SerialPortFactory(), config.ComPort, log);
-        var monitor = new MonitorService(sensors, link, config, log, profiler);
+        var monitor = new MonitorService(sensors, link, config, log);
 
         Application.Run(new TrayApplicationContext(monitor, link, store, sensors, log));
     }

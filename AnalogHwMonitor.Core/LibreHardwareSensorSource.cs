@@ -11,24 +11,16 @@ public sealed class LibreHardwareSensorSource : ISensorSource
 {
     private sealed class UpdateVisitor : IVisitor
     {
-        /// <summary>TEMPORARY, optional. Set only while measuring; see TickProfiler.</summary>
-        public TickProfiler? Profiler { get; set; }
-
         public void VisitComputer(IComputer computer) => computer.Traverse(this);
 
         public void VisitHardware(IHardware hardware)
         {
-            // Timed per hardware, because Update() has hardware granularity: asking for one
-            // CPU temperature pays for every value that CPU exposes -- every core's
-            // temperature, the package, the clocks, the power -- each one an ioctl round
-            // trip through PawnIO. Which hardware owns the cost decides whether the answer
-            // is "refresh this one less often" or "move it off the UI thread".
-            var start = TickProfiler.Now;
+            // Update() has hardware granularity: asking for one GPU temperature pays for
+            // every value that GPU exposes. Measured on an RTX 4070 that is 77 ms, almost
+            // all of it Windows' own GPU Engine performance counters rather than anything
+            // the driver does — see ThrottledSensorSource.MinimumInterval.
             hardware.Update();
-            Profiler?.RecordSourceRefresh("hw:" + hardware.Name, TickProfiler.MsSince(start));
 
-            // Subhardware is visited through Accept, so it lands back here and is timed
-            // separately rather than being counted inside its parent.
             foreach (var subHardware in hardware.SubHardware)
             {
                 subHardware.Accept(this);
@@ -56,13 +48,6 @@ public sealed class LibreHardwareSensorSource : ISensorSource
             IsMemoryEnabled = true,
         };
         _computer.Open();
-    }
-
-    /// <summary>TEMPORARY, optional. Set only while measuring; see TickProfiler.</summary>
-    public TickProfiler? Profiler
-    {
-        get => _visitor.Profiler;
-        set => _visitor.Profiler = value;
     }
 
     public void Refresh() => _computer.Accept(_visitor);

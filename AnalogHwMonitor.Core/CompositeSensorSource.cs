@@ -25,22 +25,15 @@ public sealed class CompositeSensorSource : ISensorSource
         _lastFault = new string?[sources.Length, OperationCount];
     }
 
-    /// <summary>TEMPORARY, optional. Set only while measuring; see TickProfiler.</summary>
-    public TickProfiler? Profiler { get; set; }
-
     public void Refresh()
     {
         for (var i = 0; i < _sources.Length; i++)
         {
-            var start = TickProfiler.Now;
-
             Try(i, SourceOperation.Refresh, source =>
             {
                 source.Refresh();
                 return true;
             });
-
-            Profiler?.RecordSourceRefresh(_sources[i].GetType().Name, TickProfiler.MsSince(start));
         }
     }
 
