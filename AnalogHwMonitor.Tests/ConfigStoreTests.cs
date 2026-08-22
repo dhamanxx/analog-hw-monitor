@@ -201,4 +201,32 @@ public class ConfigStoreTests : IDisposable
         Assert.True(result.Config.VuCompensateVolume);
         Assert.Empty(result.Config.StashedChannels);
     }
+
+    /// <summary>
+    /// The stash is a convenience beside ten calibration points that cost real time
+    /// with a screwdriver. A hand-edit that breaks the stash must cost the stash and
+    /// nothing else — which is why it is sanitized rather than run through IsValid.
+    /// </summary>
+    [Fact]
+    public void Load_DropsAnUnusableStashAndKeepsEverythingElse()
+    {
+        var written = AppConfig.CreateDefault();
+        written.VuMode = true;
+        written.Channels[0].MinPwm = 4;
+        written.Channels[0].MaxPwm = 249;
+        written.StashedChannels = new List<ChannelProfile>
+        {
+            new() { Channel = 0, Label = "CPU Load" },
+            new() { Channel = 0, Label = "GPU Load" },   // duplicate index
+        };
+        new ConfigStore(ConfigPath).Save(written);
+
+        var result = new ConfigStore(ConfigPath).Load();
+
+        Assert.Equal(ConfigLoadOutcome.Loaded, result.Outcome);
+        Assert.Empty(result.Config.StashedChannels);
+        Assert.True(result.Config.VuMode);
+        Assert.Equal(4, result.Config.Channels[0].MinPwm);
+        Assert.Equal(249, result.Config.Channels[0].MaxPwm);
+    }
 }
