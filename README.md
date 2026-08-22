@@ -73,7 +73,7 @@ connection watchdog.
 ## Software requirements
 
 - Windows 10 or 11
-- .NET 8 SDK to build, .NET 8 Desktop Runtime to run
+- .NET 10 SDK to build, .NET 10 Desktop Runtime to run
 - Arduino IDE (or `arduino-cli`) to flash the sketch
 
 **The application must run as administrator.** The app manifest requests elevation,
