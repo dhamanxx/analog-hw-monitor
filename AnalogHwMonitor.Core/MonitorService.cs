@@ -14,11 +14,20 @@ public sealed class MonitorService : IDisposable
     private readonly bool[] _missingReported = new bool[FrameCodec.ChannelCount];
     private AppConfig _config = null!;
 
-    public MonitorService(ISensorSource sensors, IMeterLink link, AppConfig config, IAppLog log)
+    /// <summary>TEMPORARY, optional. Null in tests and whenever nobody is measuring.</summary>
+    private readonly TickProfiler? _profiler;
+
+    public MonitorService(
+        ISensorSource sensors,
+        IMeterLink link,
+        AppConfig config,
+        IAppLog log,
+        TickProfiler? profiler = null)
     {
         _sensors = sensors;
         _link = link;
         _log = log;
+        _profiler = profiler;
         Config = config;
     }
 
@@ -53,7 +62,13 @@ public sealed class MonitorService : IDisposable
 
     public void Tick()
     {
+        // TEMPORARY instrumentation — see TickProfiler. The four stamps below are the only
+        // thing this adds to the loop; each is one call to Stopwatch.GetTimestamp.
+        var tickStart = TickProfiler.Now;
+
         _sensors.Refresh();
+        var refreshMs = TickProfiler.MsSince(tickStart);
+        var readStart = TickProfiler.Now;
 
         var pwmValues = new byte[FrameCodec.ChannelCount];
         var readings = new List<ChannelReading>(FrameCodec.ChannelCount);
@@ -99,8 +114,17 @@ public sealed class MonitorService : IDisposable
             readings.Add(new ChannelReading(i, channel.Label, value, percent, pwmValues[i], missing, false));
         }
 
+        var readMs = TickProfiler.MsSince(readStart);
+
+        var sendStart = TickProfiler.Now;
         _link.Send(FrameCodec.Encode(pwmValues));
+        var sendMs = TickProfiler.MsSince(sendStart);
+
+        var uiStart = TickProfiler.Now;
         Updated?.Invoke(this, readings);
+        var uiMs = TickProfiler.MsSince(uiStart);
+
+        _profiler?.RecordTick(tickStart, refreshMs, readMs, sendMs, uiMs);
     }
 
     public void Dispose()

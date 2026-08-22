@@ -98,7 +98,10 @@ internal static class Program
         }
 
         var link = new SerialMeterLink(new SerialPortFactory(), config.ComPort, log);
-        var monitor = new MonitorService(sensors, link, config, log);
+        // TEMPORARY: one line per minute into log.txt saying where a tick's time goes.
+        // Remove together with TickProfiler once the numbers have been read.
+        var monitor = new MonitorService(
+            sensors, link, config, log, new TickProfiler(log, TimeSpan.FromMinutes(1)));
 
         Application.Run(new TrayApplicationContext(monitor, link, store, sensors, log));
     }
