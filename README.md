@@ -186,6 +186,15 @@ channel, `/audio/0/level/1` for the right, unit `dBFS` — read through the same
 in the application has to know audio exists. Calibration, the Test switch and the
 per-channel sensor dropdown all work on it unchanged.
 
+One thing an audio channel does not do is print a live number in the **Value**
+column — it shows the unit, `dBFS`, and nothing else. A level that moves at audio
+rates is a flickering digit at any refresh rate slow enough to be readable, and the
+needle is the display that matters. The number is still there when it is useful:
+the **Test** switch shows `test`, **Apply** prints the whole chain
+(`-14.2 dBFS -> 64.5 % -> PWM 165`) into the readout below the grid on demand, and
+the **PWM** column keeps updating so calibration works exactly as it does on the
+other channels. A dead capture still shows a red dash, like any missing sensor.
+
 While VU meter mode is on, the tick that reads sensors and writes a serial frame
 runs every 40 ms (about 25 Hz) instead of every 1000 ms, so the needles can follow
 music rather than lagging a full second behind it. Turning VU meter mode off puts
