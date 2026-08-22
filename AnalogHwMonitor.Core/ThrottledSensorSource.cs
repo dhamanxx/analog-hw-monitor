@@ -18,7 +18,20 @@ namespace AnalogHwMonitor.Core;
 /// </summary>
 public sealed class ThrottledSensorSource : ISensorSource
 {
-    public static readonly TimeSpan MinimumInterval = TimeSpan.FromSeconds(1);
+    /// <summary>
+    /// Three seconds rather than one, because measurement showed a refresh costs about
+    /// 215 ms — a fifth of the wall clock at one second, and a 215-380 ms gap in the
+    /// needle's motion every second, which is longer than the VU integration's own time
+    /// constant. Temperatures and load do not change faster than this; thermal mass sees
+    /// to that.
+    ///
+    /// The cost of the choice, and it is real: the audio source's health check rides on
+    /// the same Refresh(), so a default-device change is now noticed within three seconds
+    /// rather than one, and the five-second idle release can fire up to three seconds
+    /// late. If the 215 ms turns out to be one identifiable source that can simply be
+    /// made cheap, this should go back to one second and get the responsiveness back.
+    /// </summary>
+    public static readonly TimeSpan MinimumInterval = TimeSpan.FromSeconds(3);
 
     private readonly ISensorSource _inner;
     private readonly TimeProvider _time;

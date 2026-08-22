@@ -77,7 +77,12 @@ internal static class Program
         // source that dies later costs its own readings and nothing else. The throttle
         // sits outside it because VU meter mode ticks at 25 Hz and the hardware behind
         // LibreHardwareMonitor must still only be polled once a second.
-        ISensorSource sensors = new ThrottledSensorSource(new CompositeSensorSource(log, sources.ToArray()));
+        // TEMPORARY: one line per minute into log.txt saying where a tick's time goes, and
+        // which sensor source owns the refresh. Remove together with TickProfiler.
+        var profiler = new TickProfiler(log, TimeSpan.FromMinutes(1));
+
+        ISensorSource sensors = new ThrottledSensorSource(
+            new CompositeSensorSource(log, sources.ToArray()) { Profiler = profiler });
         sensors.Refresh();
 
         var hadUnassignedChannels = config.Channels.Any(c => string.IsNullOrEmpty(c.SensorId));
@@ -98,10 +103,7 @@ internal static class Program
         }
 
         var link = new SerialMeterLink(new SerialPortFactory(), config.ComPort, log);
-        // TEMPORARY: one line per minute into log.txt saying where a tick's time goes.
-        // Remove together with TickProfiler once the numbers have been read.
-        var monitor = new MonitorService(
-            sensors, link, config, log, new TickProfiler(log, TimeSpan.FromMinutes(1)));
+        var monitor = new MonitorService(sensors, link, config, log, profiler);
 
         Application.Run(new TrayApplicationContext(monitor, link, store, sensors, log));
     }

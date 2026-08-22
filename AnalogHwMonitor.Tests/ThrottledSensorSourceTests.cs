@@ -20,31 +20,37 @@ public class ThrottledSensorSourceTests
     }
 
     [Fact]
-    public void Refresh_IsSuppressedForTheRestOfTheSecond()
+    public void Refresh_IsSuppressedUntilTheIntervalHasPassed()
     {
         var inner = Inner();
         var time = new FakeTimeProvider();
         using var throttled = new ThrottledSensorSource(inner, time);
 
-        // One second of VU meter mode: 25 ticks, one hardware refresh.
-        for (var i = 0; i < 25; i++)
+        // Driven at the VU meter's tick rate for just under the interval, whatever the
+        // interval currently is. Reading MinimumInterval rather than hardcoding a second
+        // keeps this test honest when the constant is retuned -- it is a policy value and
+        // it has been changed once already.
+        var step = TimeSpan.FromMilliseconds(40);
+        for (var elapsed = TimeSpan.Zero;
+             elapsed + step < ThrottledSensorSource.MinimumInterval;
+             elapsed += step)
         {
             throttled.Refresh();
-            time.Advance(TimeSpan.FromMilliseconds(40));
+            time.Advance(step);
         }
 
         Assert.Equal(1, inner.RefreshCount);
     }
 
     [Fact]
-    public void Refresh_PassesThroughAgainAfterASecond()
+    public void Refresh_PassesThroughAgainAfterTheInterval()
     {
         var inner = Inner();
         var time = new FakeTimeProvider();
         using var throttled = new ThrottledSensorSource(inner, time);
 
         throttled.Refresh();
-        time.Advance(TimeSpan.FromSeconds(1));
+        time.Advance(ThrottledSensorSource.MinimumInterval);
         throttled.Refresh();
 
         Assert.Equal(2, inner.RefreshCount);

@@ -35,6 +35,9 @@ public sealed class TickProfiler
     private Phase _send;
     private Phase _ui;
 
+    // Keyed on the source's type name. Fixed set, so no allocation after the first refresh.
+    private readonly Dictionary<string, Phase> _sources = new();
+
     public TickProfiler(IAppLog log, TimeSpan reportEvery)
     {
         _log = log;
@@ -46,6 +49,20 @@ public sealed class TickProfiler
 
     /// <summary>Milliseconds elapsed since a stamp taken by <see cref="Now"/>.</summary>
     public static double MsSince(long stamp) => (Stopwatch.GetTimestamp() - stamp) * TicksToMs;
+
+    /// <summary>
+    /// One source's share of a refresh. Recorded per source rather than per tick, so the
+    /// mean here is the true cost of that source's Refresh() rather than the cost
+    /// amortised over every tick — which is what made the first round of measurement
+    /// ambiguous. The whole point is to tell the WMI query apart from the driver I/O:
+    /// one of them is a five-line fix and the other is a thread.
+    /// </summary>
+    public void RecordSourceRefresh(string source, double ms)
+    {
+        var phase = _sources.TryGetValue(source, out var existing) ? existing : default;
+        phase.Add(ms);
+        _sources[source] = phase;
+    }
 
     public void RecordTick(long tickStart, double refreshMs, double readMs, double sendMs, double uiMs)
     {
@@ -77,10 +94,14 @@ public sealed class TickProfiler
             return;
         }
 
+        var perSource = _sources.Count == 0
+            ? string.Empty
+            : " | " + string.Join(", ", _sources.Select(pair => $"{pair.Key} {pair.Value}"));
+
         _log.Write(
             $"TICK {_ticks} ticks in {windowMs / 1000.0:F1}s | "
             + $"interval {_interval} | total {_total} | refresh {_refresh} | "
-            + $"read {_read} | send {_send} | ui {_ui} (mean/max ms)");
+            + $"read {_read} | send {_send} | ui {_ui}{perSource} (mean/max ms)");
 
         _ticks = 0;
         _windowStart = 0;
@@ -90,6 +111,7 @@ public sealed class TickProfiler
         _read = default;
         _send = default;
         _ui = default;
+        _sources.Clear();
     }
 
     /// <summary>Mean and maximum of one phase over the reporting window.</summary>
