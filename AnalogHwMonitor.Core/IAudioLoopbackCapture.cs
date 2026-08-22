@@ -36,7 +36,11 @@ public interface IAudioLoopbackCapture : IDisposable
     /// </summary>
     void Stop();
 
-    /// <summary>The running stream's format, or null while stopped.</summary>
+    /// <summary>
+    /// The running stream's format, or null while stopped. The sample handler reads
+    /// this on every buffer on the no-allocation capture path, so an implementation
+    /// must return a cached instance rather than constructing one per call.
+    /// </summary>
     AudioFormat? Format { get; }
 
     /// <summary>Endpoint id of the device being captured, or null while stopped.</summary>

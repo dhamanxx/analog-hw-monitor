@@ -33,6 +33,14 @@ public sealed class AudioLevelSensorSource : ISensorSource
     public const double MaxCompensationDb = 40.0;
 
     /// <summary>
+    /// Gap between attempts to start a capture that has just refused to start. Without
+    /// it a machine with no reachable endpoint would be re-enumerated fifty times a
+    /// second on the UI thread — the log latch keeps log.txt clean but says nothing
+    /// about the cost of the attempt itself.
+    /// </summary>
+    public static readonly TimeSpan StartRetryInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// A one-pole filter over the rectified signal reports the average, and the average
     /// of a rectified sine is 2/pi of its amplitude. Scaling by the reciprocal puts a
     /// full-scale sine at 0 dBFS: average-responding, peak-calibrated, which is what a
@@ -50,6 +58,10 @@ public sealed class AudioLevelSensorSource : ISensorSource
     private bool _started;
     private string? _reportedError;
     private DateTimeOffset _lastRead;
+
+    // MinValue, so a first start and a restart after a clean stop both happen at once;
+    // only a failure arms the gate.
+    private DateTimeOffset _lastFailedStart = DateTimeOffset.MinValue;
 
     // Written by the capture thread, read by the tick loop. Ticks rather than
     // DateTimeOffset because only a long can be exchanged atomically.
@@ -140,7 +152,17 @@ public sealed class AudioLevelSensorSource : ISensorSource
         ApplySilenceDecay();
 
         var level = _integrators[channel].Level * AverageToPeak;
-        var dbfs = level <= 0.0 ? AudioSensorIds.FloorDbfs : 20.0 * Math.Log10(level);
+
+        // Returned before the compensation rather than clamped after it: the
+        // compensation would otherwise lift the floor by up to the ceiling, and
+        // digital silence would read -60 dBFS on a quiet system while the mute path
+        // above returned -100 for the same absence of signal.
+        if (level <= 0.0)
+        {
+            return (float)AudioSensorIds.FloorDbfs;
+        }
+
+        var dbfs = 20.0 * Math.Log10(level);
 
         if (_compensateVolume())
         {
@@ -163,9 +185,15 @@ public sealed class AudioLevelSensorSource : ISensorSource
             return true;
         }
 
-        var now = _time.GetUtcNow().UtcTicks;
-        Interlocked.Exchange(ref _lastBufferTicks, now);
-        Interlocked.Exchange(ref _lastAdvanceTicks, now);
+        var now = _time.GetUtcNow();
+        if (now - _lastFailedStart < StartRetryInterval)
+        {
+            return false;
+        }
+
+        var nowTicks = now.UtcTicks;
+        Interlocked.Exchange(ref _lastBufferTicks, nowTicks);
+        Interlocked.Exchange(ref _lastAdvanceTicks, nowTicks);
 
         foreach (var integrator in _integrators)
         {
@@ -174,10 +202,12 @@ public sealed class AudioLevelSensorSource : ISensorSource
 
         if (!_capture.TryStart(_onSamples, out var error))
         {
+            _lastFailedStart = now;
             Report(error ?? "The audio capture could not be started.");
             return false;
         }
 
+        _lastFailedStart = DateTimeOffset.MinValue;
         _reportedError = null;
         _started = true;
         return true;

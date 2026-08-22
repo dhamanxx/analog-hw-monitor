@@ -279,4 +279,74 @@ public class AudioLevelSensorSourceTests
 
         Assert.Single(log.Lines);
     }
+
+    /// <summary>
+    /// Digital silence must read the floor whether or not the volume is turned down.
+    /// The compensation used to be added to the floor sentinel, which lifted silence to
+    /// -60 dBFS while the mute path returned -100 for the same absence of signal.
+    /// </summary>
+    [Fact]
+    public void Read_ReportsTheFloorForSilenceEvenWithCompensationOn()
+    {
+        var capture = new FakeAudioLoopbackCapture { VolumeDb = -40.0 };
+        using var source = new AudioLevelSensorSource(
+            capture, NullLog.Instance, () => true, new FakeTimeProvider());
+
+        Assert.Equal((float)AudioSensorIds.FloorDbfs, source.Read(AudioSensorIds.Left));
+    }
+
+    /// <summary>
+    /// A capture that will not start must not be retried at the tick rate: in the real
+    /// adapter every attempt is a COM enumeration of the audio endpoints, on the UI
+    /// thread, and this state persists for as long as another application holds the
+    /// endpoint in exclusive mode.
+    /// </summary>
+    [Fact]
+    public void Read_DoesNotRetryAFailedStartAtTheTickRate()
+    {
+        var capture = new FakeAudioLoopbackCapture { StartError = "No audio endpoint." };
+        var time = new FakeTimeProvider();
+        using var source = new AudioLevelSensorSource(capture, NullLog.Instance, () => false, time);
+
+        // One second of VU meter mode: 25 ticks, two channels read on each.
+        for (var tick = 0; tick < 25; tick++)
+        {
+            source.Read(AudioSensorIds.Left);
+            source.Read(AudioSensorIds.Right);
+        }
+
+        Assert.Equal(1, capture.StartCount);
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        source.Read(AudioSensorIds.Left);
+
+        Assert.Equal(2, capture.StartCount);
+    }
+
+    /// <summary>
+    /// The gate is measured from the last buffer and the decay from the last time the
+    /// level moved, so once the buffers stop the needle keeps falling at the read rate
+    /// instead of in gap-sized steps. Collapsing the two timestamps into one passes
+    /// every other test in this file; this is the one that notices.
+    /// </summary>
+    [Fact]
+    public void Read_KeepsFallingOnEveryReadOnceTheGapHasPassed()
+    {
+        var (source, capture, time) = Build();
+        using (source)
+        {
+            source.Read(AudioSensorIds.Left);
+            capture.DeliverSine(seconds: 2.0);
+
+            time.Advance(TimeSpan.FromMilliseconds(200));
+            var firstFall = source.Read(AudioSensorIds.Left)!.Value;
+
+            time.Advance(TimeSpan.FromMilliseconds(40));
+            var secondFall = source.Read(AudioSensorIds.Left)!.Value;
+
+            Assert.True(
+                secondFall < firstFall,
+                $"expected the needle to keep falling, it went {firstFall} -> {secondFall} dBFS");
+        }
+    }
 }
