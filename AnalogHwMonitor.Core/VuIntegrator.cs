@@ -12,10 +12,16 @@ namespace AnalogHwMonitor.Core;
 /// moving-coil meter downstream adds its own mechanical inertia on top, so precision
 /// beyond this would be thrown away.
 ///
-/// <see cref="Level"/> is written by the audio capture thread and read by the UI
-/// thread, which is what the Volatile accesses are for. There is no lock: a reader
-/// that sees the previous value for one tick out of twenty-five is invisible on a
-/// needle, and a lock on the capture path would not be.
+/// <see cref="Level"/> is written by two threads without a lock: the audio capture
+/// thread via <see cref="Add"/>, and the UI tick loop via <see cref="Decay"/>.
+/// <see cref="Volatile.Read"/> and <see cref="Volatile.Write"/> ensure each access is
+/// atomic and the value is never torn, but they do not make the read-modify-write pair
+/// atomic — an overlapping update can be lost. This is accepted rather than guarded,
+/// because a lost update is self-correcting within one buffer: whichever write lands,
+/// the next call reads it and carries on, so the level can be one buffer behind but
+/// never stuck. The window is also narrow by construction: the tick loop only decays
+/// after a silence gap when the capture thread is not calling <see cref="Add"/>.
+/// A lock is not worth taking on the capture path to correct something no needle can show.
 /// </summary>
 public sealed class VuIntegrator
 {
