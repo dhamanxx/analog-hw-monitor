@@ -9,6 +9,10 @@ position, and sends the five values to an Arduino UNO over USB once a second.
 The Arduino drives five PWM pins, and each meter's own inertia turns the pulses
 into a steady deflection.
 
+The first two meters can also be handed over to a stereo VU meter, driven by
+whatever Windows is currently playing through the default output device, in
+place of CPU and GPU load — see [VU meter mode](#vu-meter-mode).
+
 > **Status: implemented.** The tray application, the settings window with live
 > readings and per-meter calibration, the serial link with its reconnect loop, the
 > Arduino sketch and the test suite are all built and working. Sensors come from
@@ -55,6 +59,11 @@ to room temperature under Windows — a 0–100 scale would keep every needle pa
 in the upper half of its dial. Both ends of every range are configurable, and any
 channel can be pointed at a different sensor entirely.
 
+With [VU meter mode](#vu-meter-mode) on, channels 0 and 1 become `VU Left` and
+`VU Right`, reading -40–0 dBFS instead of load percentage; channels 2–4 are
+unaffected. That range is a starting point, not a fixed spec — it is editable per
+channel exactly like any other range.
+
 ## Hardware
 
 - Arduino UNO (or any 5 V ATmega328P board) and a USB cable
@@ -78,6 +87,10 @@ connection watchdog.
 
 **The application must run as administrator.** The app manifest requests elevation,
 so Windows will prompt. Without it, sensor access fails outright.
+
+VU meter mode adds no runtime requirement of its own. WASAPI loopback capture
+needs no driver and no elevation beyond what the app already asks for above —
+there is no PawnIO-style install to track down for the audio path.
 
 ### PawnIO — required for temperatures on most machines
 
@@ -158,6 +171,51 @@ channel therefore stores two calibration points.
 Everything between those two points is interpolated linearly. Other channels keep
 running normally while one is being calibrated.
 
+## VU meter mode
+
+The tray icon's checkable **VU meter** item, and the settings window's own
+**VU meter mode** checkbox, swap channels 0 and 1 away from CPU and GPU load and
+onto a stereo VU meter fed by whatever the default output device is playing,
+captured over WASAPI loopback. Unchecking either one swaps them back. The switch
+applies on the click, not on Save, so watching music does not require finding the
+Save button first.
+
+The audio level arrives as an ordinary sensor — `/audio/0/level/0` for the left
+channel, `/audio/0/level/1` for the right, unit `dBFS` — read through the same
+`ISensorSource` interface as a CPU temperature. That is deliberate: nothing else
+in the application has to know audio exists. Calibration, the Test switch and the
+per-channel sensor dropdown all work on it unchanged.
+
+While VU meter mode is on, the tick that reads sensors and writes a serial frame
+runs every 40 ms (about 25 Hz) instead of every 1000 ms, so the needles can follow
+music rather than lagging a full second behind it. Turning VU meter mode off puts
+the tick back to 1000 ms. Nothing else changes the rate — a dead sensor or a
+disconnected board does not speed it up or slow it down.
+
+The meter is average-responding and peak-calibrated — a VU meter, not a peak
+meter. A full-scale sine wave reads exactly 0 dBFS; a short transient reads lower
+than its true peak, because the needle follows a running average of the rectified
+signal rather than the instantaneous sample. Ballistics follow the 1942 VU
+standard: 99 % of a step is reached within 300 ms, and the fall is exactly as
+fast as the rise.
+
+### Volume compensation
+
+WASAPI loopback taps the audio engine's own mix, which on most endpoints already
+carries the attenuation from the Windows volume slider — turn the volume down and
+the loopback signal gets quieter too, independent of what the music is doing.
+**Compensate Windows volume** (on by default) adds that attenuation back into the
+reading, capped at +40 dB, so the needles show the recording rather than the
+volume knob.
+
+Whether the loopback tap includes the master volume at all depends on the
+endpoint: some sound cards apply their volume control in hardware, after the
+point WASAPI taps the signal, so nothing needs adding back. That is why
+compensation is a checkbox rather than an assumption baked into the math. The
+symptom that means it should be turned off is the needles moving the *wrong* way
+relative to the volume knob — quieter as you turn the volume up, louder as you
+turn it down.
+
 ## Configuration
 
 `config.json` sits next to the executable — the whole thing is portable, nothing is
@@ -168,6 +226,8 @@ hand is possible but not required.
 {
   "comPort": "COM3",
   "startWithWindows": true,
+  "vuMode": false,
+  "vuCompensateVolume": true,
   "channels": [
     {
       "pin": 3,
@@ -178,6 +238,10 @@ hand is possible but not required.
       "minPwm": 0,
       "maxPwm": 255
     }
+  ],
+  "stashedChannels": [
+    { "channel": 0, "label": "VU Left",  "sensorId": "/audio/0/level/0", "min": -40, "max": 0 },
+    { "channel": 1, "label": "VU Right", "sensorId": "/audio/0/level/1", "min": -40, "max": 0 }
   ]
 }
 ```
@@ -189,6 +253,14 @@ hand is possible but not required.
 | `sensorId` | LibreHardwareMonitor sensor identifier |
 | `min` / `max` | Sensor values that mean zero and full deflection, in the sensor's own units |
 | `minPwm` / `maxPwm` | Per-meter calibration points |
+| `vuMode` | Whether channels 0 and 1 are currently VU Left/Right (`true`) or CPU/GPU load (`false`); also decides the tick rate |
+| `vuCompensateVolume` | Whether the Windows master volume attenuation is added back into the VU reading |
+| `stashedChannels` | The profile for channels 0 and 1 that is *not* currently live, keyed by `channel` (the channel index) |
+
+`stashedChannels` holds only `channel`, `label`, `sensorId`, `min` and `max` — no
+`pin` and no `minPwm`/`maxPwm`. That is deliberate: switching VU meter mode never
+touches the pin wiring or the calibration points, which belong to the physical
+meter, so the parked profile has no field to carry them in.
 
 The `channels` array always holds exactly five entries, and their order defines
 the channels.
@@ -231,6 +303,16 @@ The needles are meant to tell you when they are lying.
   pick a new sensor from the dropdown.
 - **The tray icon shows a warning badge.** The port could not be opened. The tooltip
   says why; the app keeps retrying every five seconds on its own.
+- **Both VU needles drop to zero while VU meter mode is on.** Either there is no
+  audio output device, or another application is holding the default endpoint in
+  exclusive mode. Both rows go red in the settings window, and `log.txt` says
+  which of the two it was.
+- **A VU needle stays parked instead of falling to zero when playback stops.**
+  It should not: WASAPI stops delivering audio entirely the moment nothing is
+  playing, and the source decays the level itself once 150 ms pass without a
+  buffer, precisely so the needle eases down to zero instead of freezing wherever
+  the last sample left it. A needle that stays put is a bug in that decay, not
+  expected behaviour.
 - **Something happened while you were away.** `log.txt` sits next to the executable
   and rotates to `log.old.txt` at 1 MB.
 
@@ -243,6 +325,11 @@ with defaults, so a bad edit costs you your settings but never a startup loop.
 | --- | --- |
 | `AnalogHwMonitor.Core/` | Sensor reading, mapping, calibration, serial link, config — no UI |
 | `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs` | ACPI thermal zones over WMI, composed alongside LibreHardwareMonitor so temperatures survive a machine where the ring0 driver reports none |
+| `AnalogHwMonitor.Core/AudioLevelSensorSource.cs` | `ISensorSource` over the WASAPI capture: dBFS conversion, volume compensation, silence decay, health check and restart |
+| `AnalogHwMonitor.Core/VuIntegrator.cs` | The VU ballistics themselves — rectify and one-pole filter, tau 65 ms — with no COM, no threads and no allocation |
+| `AnalogHwMonitor.Core/WasapiLoopbackAdapter.cs` | The only class that sees NAudio; wraps its loopback capture behind `IAudioLoopbackCapture` |
+| `AnalogHwMonitor.Core/ThrottledSensorSource.cs` | Decorator that caps `Refresh()` on the composite sensor source at once a second, so VU meter mode's faster tick does not also speed up LibreHardwareMonitor's driver calls |
+| `AnalogHwMonitor.Core/VuModeSwitch.cs` | Swaps channels 0 and 1 between their VU and non-VU profiles, keyed by channel index |
 | `AnalogHwMonitor.App/` | WinForms tray icon and settings window |
 | `AnalogHwMonitor.Tests/` | xUnit tests for the core, using fake sensors and a fake serial link |
 | `arduino/analog_hw_monitor/` | The Arduino sketch |
@@ -274,7 +361,15 @@ auto-update, no non-linear scaling curves, and no software smoothing. If the nee
 turn out to twitch too much at one sample per second, smoothing is a small addition
 to a single class.
 
+VU meter mode keeps the same discipline: no peak-hold, no choice of a specific
+audio device (it is always the default render endpoint), no switchable ballistics
+(PPM), no spectrum analysis, and no per-application metering.
+
 ## Credits
 
 Sensor data comes from
 [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor).
+
+Audio capture for VU meter mode comes from
+[NAudio](https://github.com/naudio/NAudio) (MIT), specifically the
+`NAudio.Wasapi` package.
