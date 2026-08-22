@@ -100,24 +100,59 @@ public class SerialMeterLinkTests
     /// In VU meter mode Send() is called 25 times a second, and a tick-counted
     /// interval would reopen a missing port five times a second — each attempt
     /// reading for a banner that is not coming, with a 500 ms timeout per read.
+    ///
+    /// This test and <see cref="Send_RetriesAfterFiveSecondsEvenWithOnlyOneMoreCall"/>
+    /// deliberately break the one-to-one pairing between Send() calls and clock
+    /// advances. If every clock advance were paired with exactly one Send() call (as
+    /// an earlier version of this test did), a regression that counted calls instead
+    /// of time would reproduce the exact same pass/fail pattern and slip through
+    /// unnoticed — the test would be proving the constant changed, not that the
+    /// mechanism did. Do not "simplify" the unpaired calls/advances below back into a
+    /// single loop; that is exactly what would let the tick-counting bug back in.
+    /// Here: the clock never advances at all, no matter how many times Send() is
+    /// called, so only a genuinely time-based implementation can still show one
+    /// attempt at the end.
     /// </summary>
     [Fact]
-    public void Send_RetriesTheConnectionOnlyEveryFiveSeconds()
+    public void Send_DoesNotRetryNoMatterHowManyCallsIfNoTimeHasPassed()
     {
         var factory = FactoryWith("COM3", () => new FakeSerialPort("nothing"));
         var time = new FakeTimeProvider();
         using var link = new SerialMeterLink(factory, "COM3", NullLog.Instance, time);
 
-        // Four seconds at the VU meter's 25 Hz: one hundred calls, one attempt.
-        for (var i = 0; i < 100; i++)
+        // The very first call always attempts (MinValue seed) — that is covered by
+        // Send_AttemptsTheConnectionOnItsVeryFirstCall. What this test pins is that
+        // none of the next one thousand calls attempt again, even though a
+        // call-counting implementation would have crossed any plausible threshold
+        // many times over — because the clock has not moved a single tick.
+        for (var i = 0; i < 1001; i++)
         {
             link.Send("V:0,0,0,0,0\n");
-            time.Advance(TimeSpan.FromMilliseconds(40));
         }
 
         Assert.Single(factory.CreatedPortNames);
+    }
 
-        time.Advance(TimeSpan.FromSeconds(2));
+    /// <summary>
+    /// The other half of the pairing-break described on
+    /// <see cref="Send_DoesNotRetryNoMatterHowManyCallsIfNoTimeHasPassed"/>: here
+    /// almost no calls happen, but the clock is advanced past the interval in one
+    /// jump. A call-counting implementation would still be far below any plausible
+    /// call threshold and would not retry; only a genuinely time-based
+    /// implementation retries here.
+    /// </summary>
+    [Fact]
+    public void Send_RetriesAfterFiveSecondsEvenWithOnlyOneMoreCall()
+    {
+        var factory = FactoryWith("COM3", () => new FakeSerialPort("nothing"));
+        var time = new FakeTimeProvider();
+        using var link = new SerialMeterLink(factory, "COM3", NullLog.Instance, time);
+
+        // First call attempts (MinValue seed).
+        link.Send("V:0,0,0,0,0\n");
+        Assert.Single(factory.CreatedPortNames);
+
+        time.Advance(TimeSpan.FromSeconds(6));
         link.Send("V:0,0,0,0,0\n");
 
         Assert.Equal(2, factory.CreatedPortNames.Count);
