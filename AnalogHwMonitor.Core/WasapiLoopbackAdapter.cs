@@ -123,9 +123,16 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
                 var enumerator = _enumerator ??= new MMDeviceEnumerator();
 
                 // GetDefaultAudioEndpoint hands back a new COM object every call, and
-                // this one is called once a second for the life of the process.
+                // this one is called on every health check for the life of the process.
                 using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                DeviceName = device.FriendlyName;
+
+                // Deliberately NOT reading device.FriendlyName here. It used to be read on
+                // this path to keep DeviceName fresh, and measurement put the whole health
+                // check at 127 ms — the most expensive thing in a refresh, ahead of the
+                // ring0 driver I/O. FriendlyName opens the endpoint's property store over
+                // COM, and because the endpoint object above is new on every call, that
+                // store was reopened every time. The name is wanted by one dropdown, read
+                // when a window opens; the DeviceName getter resolves it there instead.
                 return device.ID;
             }
             catch (Exception)
