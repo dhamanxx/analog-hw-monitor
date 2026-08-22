@@ -10,20 +10,30 @@ public sealed class SerialMeterLink : IMeterLink
     /// <summary>Read attempts while waiting for the banner after the UNO reboots.</summary>
     public const int BannerReadAttempts = 5;
 
-    /// <summary>Ticks between reconnect attempts. At 1 Hz this is the 5 s from the spec.</summary>
-    public const int ReconnectEveryTicks = 5;
+    /// <summary>
+    /// Wall-clock gap between reconnect attempts. This used to be a tick count, which
+    /// silently meant "five seconds" only while the loop ran at 1 Hz — VU meter mode
+    /// runs it at 25 Hz and would have turned the same constant into 200 ms.
+    /// </summary>
+    public static readonly TimeSpan ReconnectInterval = TimeSpan.FromSeconds(5);
 
     private readonly ISerialPortFactory _factory;
     private readonly IAppLog _log;
+    private readonly TimeProvider _time;
     private ISerialPort? _port;
-    private int _ticksSinceAttempt = ReconnectEveryTicks - 1;
+
+    // MinValue rather than "now", so the first Send() attempts a connection instead
+    // of sitting out the first interval with the needles at zero.
+    private DateTimeOffset _lastAttempt = DateTimeOffset.MinValue;
     private string? _reportedError;
 
-    public SerialMeterLink(ISerialPortFactory factory, string? portName, IAppLog log)
+    public SerialMeterLink(
+        ISerialPortFactory factory, string? portName, IAppLog log, TimeProvider? time = null)
     {
         _factory = factory;
         PortName = portName;
         _log = log;
+        _time = time ?? TimeProvider.System;
     }
 
     /// <summary>Changing this drops the current connection.</summary>
@@ -104,13 +114,13 @@ public sealed class SerialMeterLink : IMeterLink
     {
         if (!IsConnected)
         {
-            _ticksSinceAttempt++;
-            if (_ticksSinceAttempt < ReconnectEveryTicks)
+            var now = _time.GetUtcNow();
+            if (now - _lastAttempt < ReconnectInterval)
             {
                 return;
             }
 
-            _ticksSinceAttempt = 0;
+            _lastAttempt = now;
             if (!TryConnect())
             {
                 return;

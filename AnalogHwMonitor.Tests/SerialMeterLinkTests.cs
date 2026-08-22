@@ -95,18 +95,43 @@ public class SerialMeterLinkTests
         Assert.Contains("The device is not connected.", link.LastError);
     }
 
+    /// <summary>
+    /// The reconnect interval has to be five seconds of wall clock, not five calls.
+    /// In VU meter mode Send() is called 25 times a second, and a tick-counted
+    /// interval would reopen a missing port five times a second — each attempt
+    /// reading for a banner that is not coming, with a 500 ms timeout per read.
+    /// </summary>
     [Fact]
-    public void Send_RetriesTheConnectionOnlyEveryFifthTick()
+    public void Send_RetriesTheConnectionOnlyEveryFiveSeconds()
     {
         var factory = FactoryWith("COM3", () => new FakeSerialPort("nothing"));
-        using var link = new SerialMeterLink(factory, "COM3", NullLog.Instance);
+        var time = new FakeTimeProvider();
+        using var link = new SerialMeterLink(factory, "COM3", NullLog.Instance, time);
 
-        for (var i = 0; i < 6; i++)
+        // Four seconds at the VU meter's 25 Hz: one hundred calls, one attempt.
+        for (var i = 0; i < 100; i++)
         {
             link.Send("V:0,0,0,0,0\n");
+            time.Advance(TimeSpan.FromMilliseconds(40));
         }
 
-        Assert.Equal(2, factory.CreatedPortNames.Count);   // ticks 1 and 6
+        Assert.Single(factory.CreatedPortNames);
+
+        time.Advance(TimeSpan.FromSeconds(2));
+        link.Send("V:0,0,0,0,0\n");
+
+        Assert.Equal(2, factory.CreatedPortNames.Count);
+    }
+
+    [Fact]
+    public void Send_AttemptsTheConnectionOnItsVeryFirstCall()
+    {
+        var factory = FactoryWith("COM3", () => new FakeSerialPort("nothing"));
+        using var link = new SerialMeterLink(factory, "COM3", NullLog.Instance, new FakeTimeProvider());
+
+        link.Send("V:0,0,0,0,0\n");
+
+        Assert.Single(factory.CreatedPortNames);
     }
 
     [Fact]
