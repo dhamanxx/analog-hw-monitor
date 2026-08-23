@@ -338,7 +338,7 @@ with defaults, so a bad edit costs you your settings but never a startup loop.
 | `AnalogHwMonitor.Core/AudioLevelSensorSource.cs` | `ISensorSource` over the WASAPI capture: dBFS conversion, volume compensation, silence decay, health check and restart |
 | `AnalogHwMonitor.Core/VuIntegrator.cs` | The VU ballistics themselves — rectify and one-pole filter, tau 65 ms — with no COM, no threads and no allocation |
 | `AnalogHwMonitor.Core/WasapiLoopbackAdapter.cs` | The only class that sees NAudio; wraps its loopback capture behind `IAudioLoopbackCapture` |
-| `AnalogHwMonitor.Core/ThrottledSensorSource.cs` | Decorator that caps `Refresh()` on the composite sensor source at once a second, so VU meter mode's faster tick does not also speed up LibreHardwareMonitor's driver calls |
+| `AnalogHwMonitor.Core/ThrottledSensorSource.cs` | Decorator that caps `Refresh()` on the composite sensor source — once a second normally, once in three while VU meter mode is on, so its faster tick does not also speed up LibreHardwareMonitor's driver calls |
 | `AnalogHwMonitor.Core/VuModeSwitch.cs` | Swaps channels 0 and 1 between their VU and non-VU profiles, keyed by channel index |
 | `AnalogHwMonitor.App/` | WinForms tray icon and settings window |
 | `AnalogHwMonitor.Tests/` | xUnit tests for the core, using fake sensors and a fake serial link |
