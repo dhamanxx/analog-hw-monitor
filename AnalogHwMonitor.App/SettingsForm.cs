@@ -337,10 +337,13 @@ public sealed class SettingsForm : Form
         Cursor = Cursors.WaitCursor;
         Application.DoEvents();
 
-        // DoEvents() can pump a pending timer tick that reconnects the link — if that
-        // just happened, the scan below would probe the port the app now holds and
-        // wrongly report silence. Re-check rather than trusting the state from before
-        // the pump.
+        // DoEvents() does not pump a timer tick into reconnecting the link — Tick() ->
+        // QueuedMeterLink.Send is a TryWrite onto a queue, and the actual reconnect now
+        // happens on the sender task at whatever instant it wakes up, independent of any
+        // tick. But that makes the re-check below more necessary than before, not less:
+        // the link can go from disconnected to connected at any moment, tick or no tick,
+        // so the state captured above this call can already be stale by the time
+        // DoEvents() returns. Re-check rather than trusting it.
         if (_link.IsConnected && _link.PortName is { } reconnected)
         {
             RefreshPorts();

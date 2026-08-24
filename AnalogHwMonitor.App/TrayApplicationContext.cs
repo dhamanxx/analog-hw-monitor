@@ -238,6 +238,16 @@ public sealed class TrayApplicationContext : ApplicationContext
             //   data corruption — accepted for the same reason as the driver: the
             //   alternative is an uncapped wait that hangs Exit on exactly the stuck
             //   write that provoked it.
+            //
+            // A third term follows right after this block: _monitor.Dispose() below
+            // reaches AudioLevelSensorSource.Dispose() -> WasapiLoopbackAdapter.StopLocked
+            // -> _stopped.Wait(StopTimeout), and StopTimeout is 2 s of its own, run after
+            // whichever of the two waits above finished. So the worst case for the whole
+            // Dispose() is not the ~3.5 s the port wait tops out at above — it is that
+            // ~3.5 s plus this 2 s, i.e. about 5-6 s, and other slop in the two hazards
+            // above (retries, a slow driver close) can push it toward the 5-7 s this
+            // method can plausibly take end to end. Still a hidden UI stall, not data
+            // corruption, and still accepted for the same reason as the other two terms.
             try
             {
                 Task.WaitAll(new[] { _pollTask, _sendTask }, TimeSpan.FromSeconds(2));

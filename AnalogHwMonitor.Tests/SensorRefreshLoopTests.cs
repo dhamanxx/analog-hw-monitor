@@ -57,4 +57,30 @@ public class SensorRefreshLoopTests
         Assert.Single(log.Lines);
         Assert.Contains("refresh failed", log.Lines[0]);
     }
+
+    /// <summary>
+    /// The latch's reset path is otherwise unproven: a success has to clear
+    /// <c>_reportedError</c>, or a source that recovers and then fails differently would
+    /// stay silent forever — the one failure mode that hides every other one, because
+    /// nothing would ever appear in log.txt again.
+    /// </summary>
+    [Fact]
+    public void RefreshOnce_LogsAgainAfterARecoveryFollowedByADifferentFault()
+    {
+        var log = new RecordingLog();
+        var sensors = new FaultySensorSource { RefreshFault = "fault A" };
+        var loop = new SensorRefreshLoop(sensors, log);
+
+        loop.RefreshOnce();
+
+        sensors.RefreshFault = null;
+        loop.RefreshOnce();
+
+        sensors.RefreshFault = "fault B";
+        loop.RefreshOnce();
+
+        Assert.Equal(2, log.Lines.Count);
+        Assert.Contains("fault A", log.Lines[0]);
+        Assert.Contains("fault B", log.Lines[1]);
+    }
 }

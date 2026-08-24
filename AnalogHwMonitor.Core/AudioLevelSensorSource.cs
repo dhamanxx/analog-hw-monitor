@@ -74,10 +74,15 @@ public sealed class AudioLevelSensorSource : ISensorSource
     /// interleave and leave _started == true over a stopped capture — both needles dead until
     /// something shakes them.
     ///
-    /// OnSamples deliberately does NOT take this lock: it runs on the capture thread at buffer
-    /// rate and must never wait on the UI thread. It communicates solely through
-    /// Volatile/Interlocked (_lastBufferTicks, _lastAdvanceTicks, VuIntegrator._level), and that
-    /// is enough.
+    /// OnSamples deliberately does NOT take this lock: doing so would deadlock the process, not
+    /// just add latency. WasapiLoopbackAdapter.StopLocked holds the adapter's own gate across
+    /// capture.Dispose(), which joins the capture thread — and Stop() is reached with
+    /// _lifecycle already held (Read()/Refresh() -> Stop() -> _capture.Stop() -> StopLocked).
+    /// If OnSamples, running on the capture thread, ever blocked on _lifecycle, the thread
+    /// StopLocked is joining would be waiting on a lock held by the very thread doing the
+    /// joining: a permanent freeze of the tray app, not a slow one. It communicates solely
+    /// through Volatile/Interlocked (_lastBufferTicks, _lastAdvanceTicks, VuIntegrator._level),
+    /// and that is enough.
     /// </summary>
     private readonly object _lifecycle = new();
 
