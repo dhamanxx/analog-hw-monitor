@@ -6,9 +6,10 @@ namespace AnalogHwMonitor.App;
 /// Owns the 1 Hz timer and the tray icon. The timer runs on the UI thread, so
 /// MonitorService and the settings window never need to marshal anything.
 ///
-/// It also owns the lifetime of the <see cref="SensorRefreshLoop"/> task, which is the one
-/// piece of this application deliberately kept off the UI thread — see the Task.Run in the
-/// constructor and the shutdown ordering in Dispose.
+/// It also owns the lifetime of the <see cref="SensorRefreshLoop"/> and
+/// <see cref="QueuedMeterLink"/> tasks, the two pieces of this application deliberately
+/// kept off the UI thread — see the two Task.Run calls in the constructor and the
+/// shutdown ordering in Dispose.
 /// </summary>
 public sealed class TrayApplicationContext : ApplicationContext
 {
@@ -21,6 +22,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly System.Windows.Forms.Timer _timer;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _pollTask;
+    private readonly Task _sendTask;
     private SettingsForm? _settings;
     private bool _tickFailureReported;
 
@@ -42,7 +44,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         ConfigStore store,
         ISensorSource sensors,
         IAppLog log,
-        SensorRefreshLoop refreshLoop)
+        SensorRefreshLoop refreshLoop,
+        QueuedMeterLink sendLoop)
     {
         _monitor = monitor;
         _link = link;
@@ -85,6 +88,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         // running on the UI thread and the whole change would be a no-op that only a
         // profiler could catch.
         _pollTask = Task.Run(() => refreshLoop.RunAsync(_cts.Token));
+
+        // Same trap, same fix: Task.Run keeps the sender's blocking SerialPort.Write off
+        // the UI thread instead of just moving its continuations there.
+        _sendTask = Task.Run(() => sendLoop.RunAsync(_cts.Token));
 
         // Dispose writes "Stopped."; without this line a clean run leaves log.txt with
         // one entry and no way to tell when the session it ended actually began.
@@ -210,15 +217,31 @@ public sealed class TrayApplicationContext : ApplicationContext
 
             // Cancellation does not interrupt a 99 ms Refresh() already in progress —
             // a hung WMI query or GPU counter read is what actually consumes this cap —
-            // so the wait is capped rather than open-ended.
+            // nor does it interrupt a SerialPort.Write already blocked on a wedged
+            // adapter, which the sender task can be, up to its own 1000 ms
+            // WriteTimeout. So the wait is capped rather than open-ended.
             //
-            // What the cap permits, said plainly: when it expires the poll task is still
-            // running, and _monitor.Dispose() below reaches _computer.Close(), which
-            // unloads the ring0 driver underneath an in-flight _computer.Accept(). That
-            // is accepted, not prevented. The process is exiting, nothing observes the
-            // resulting exception, and waiting without a cap would hang Exit on exactly
-            // the stuck refresh that provoked it.
-            Task.WaitAll(new[] { _pollTask }, TimeSpan.FromSeconds(2));
+            // What the cap permits, said plainly: when it expires, one or both tasks are
+            // still running, and _monitor.Dispose() below reaches both _computer.Close(),
+            // which unloads the ring0 driver underneath an in-flight _computer.Accept(),
+            // and QueuedMeterLink.Dispose(), which disposes the serial port underneath an
+            // in-flight Write(). Neither is prevented — both are accepted. The process is
+            // exiting, nothing observes the resulting exceptions, and waiting without a
+            // cap would hang Exit on exactly the stuck call that provoked it.
+            try
+            {
+                Task.WaitAll(new[] { _pollTask, _sendTask }, TimeSpan.FromSeconds(2));
+            }
+            catch (AggregateException)
+            {
+                // A faulted task, not a timeout. The sender task ends faulted whenever
+                // the port is disposed under an in-flight write, and WaitAll rethrows
+                // that here — on the UI thread, during Exit. Unhandled it would skip
+                // everything below: the tray icon would linger after the process died
+                // and log.txt would never get its "Stopped." line. There is nothing to
+                // do about the fault itself; we are exiting.
+            }
+
             _cts.Dispose();
 
             _icon.Visible = false;

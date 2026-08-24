@@ -102,9 +102,16 @@ internal static class Program
         }
 
         var link = new SerialMeterLink(new SerialPortFactory(), config.ComPort, log);
-        var monitor = new MonitorService(sensors, link, config, log);
+
+        // MonitorService writes into the queue, not to the port. Tick runs on the UI
+        // thread, and SerialPort.Write on a jammed adapter is a matter of seconds, not
+        // microseconds. The tray and SettingsForm keep holding SerialMeterLink: they
+        // need PortName and IsConnected, which have no business being on the queue.
+        var sendLoop = new QueuedMeterLink(link);
+        var monitor = new MonitorService(sensors, sendLoop, config, log);
         var refreshLoop = new SensorRefreshLoop(sensors, log);
 
-        Application.Run(new TrayApplicationContext(monitor, link, store, sensors, log, refreshLoop));
+        Application.Run(
+            new TrayApplicationContext(monitor, link, store, sensors, log, refreshLoop, sendLoop));
     }
 }
