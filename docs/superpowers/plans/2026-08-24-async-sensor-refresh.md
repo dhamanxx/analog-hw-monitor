@@ -1122,7 +1122,7 @@ public sealed class QueuedMeterLink : IMeterLink
 
 Run: `dotnet test AnalogHwMonitor.sln --filter "FullyQualifiedName~QueuedMeterLinkTests"`
 
-Expected: PASS — 6 testov.
+Expected: PASS — 5 testov.
 
 - [ ] **Step 5: Commit**
 
