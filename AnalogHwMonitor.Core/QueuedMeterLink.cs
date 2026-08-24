@@ -68,6 +68,15 @@ public sealed class QueuedMeterLink : IMeterLink
         }
     }
 
+    /// <summary>
+    /// Assumes the caller has already stopped the pump — cancelled the token passed to
+    /// <see cref="RunAsync"/> and waited for the returned task to finish. Disposing while
+    /// the pump is still running disposes the inner link underneath an in-flight
+    /// <see cref="IMeterLink.Send"/>. The resulting exception is not an
+    /// <see cref="OperationCanceledException"/>, so <see cref="RunAsync"/>'s catch does
+    /// not swallow it and that task ends faulted rather than completed. This method does
+    /// not guard against that; it relies on the caller for it.
+    /// </summary>
     public void Dispose()
     {
         _frames.Writer.TryComplete();
