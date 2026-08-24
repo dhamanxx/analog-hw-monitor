@@ -1318,6 +1318,7 @@ git commit -m "perf: refresh the sensors on their own task at 1 Hz instead of on
 **Files:**
 - Modify: `AnalogHwMonitor.App/TrayApplicationContext.cs`
 - Modify: `AnalogHwMonitor.App/Program.cs`
+- Modify: `AnalogHwMonitor.Core/QueuedMeterLink.cs` — doc komentár na `Dispose()`, nič iné
 
 **Interfaces:**
 - Consumes: `QueuedMeterLink(IMeterLink)` a `QueuedMeterLink.RunAsync(CancellationToken)` z Task 6; `TrayApplicationContext` zo Task 7.
