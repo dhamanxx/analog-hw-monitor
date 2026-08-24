@@ -195,11 +195,15 @@ the **Test** switch shows `test`, **Apply** prints the whole chain
 the **PWM** column keeps updating so calibration works exactly as it does on the
 other channels. A dead capture still shows a red dash, like any missing sensor.
 
-While VU meter mode is on, the tick that reads sensors and writes a serial frame
-runs every 40 ms (about 25 Hz) instead of every 1000 ms, so the needles can follow
-music rather than lagging a full second behind it. Turning VU meter mode off puts
-the tick back to 1000 ms. Nothing else changes the rate — a dead sensor or a
-disconnected board does not speed it up or slow it down.
+While VU meter mode is on, the tick that builds a frame from the latest sensor
+readings and hands it to the sender task runs every 40 ms (about 25 Hz) instead of
+every 1000 ms, so the needles can follow music rather than lagging a full second
+behind it. Turning VU meter mode off puts the tick back to 1000 ms; nothing else
+about it changes. Reading the sensors themselves is a separate job that runs at a
+flat 1 Hz in both modes, on its own task, so VU meter mode has no effect on it at
+all. Altogether the app runs on three threads — the UI thread, the sensor refresh
+task, and the serial sender task — plus the WASAPI capture thread while VU meter
+mode is on.
 
 The meter is average-responding and peak-calibrated — a VU meter, not a peak
 meter. A full-scale sine wave reads exactly 0 dBFS; a short transient reads lower
@@ -338,7 +342,7 @@ with defaults, so a bad edit costs you your settings but never a startup loop.
 | `AnalogHwMonitor.Core/AudioLevelSensorSource.cs` | `ISensorSource` over the WASAPI capture: dBFS conversion, volume compensation, silence decay, health check and restart |
 | `AnalogHwMonitor.Core/VuIntegrator.cs` | The VU ballistics themselves — rectify and one-pole filter, tau 65 ms — with no COM, no threads and no allocation |
 | `AnalogHwMonitor.Core/WasapiLoopbackAdapter.cs` | The only class that sees NAudio; wraps its loopback capture behind `IAudioLoopbackCapture` |
-| `AnalogHwMonitor.Core/ThrottledSensorSource.cs` | Decorator that caps `Refresh()` on the composite sensor source — once a second normally, once in three while VU meter mode is on, so its faster tick does not also speed up LibreHardwareMonitor's driver calls |
+| `AnalogHwMonitor.Core/SensorRefreshLoop.cs` | Runs `Refresh()` on its own task at a flat 1 Hz in both modes — replaces the old decorator that throttled to one second normally, three in VU meter mode, a workaround for a UI-thread stall that moving `Refresh()` off it retired. Costs about 10 % of one core continuously, almost all of it Windows' own GPU Engine performance counters, not this application's own work |
 | `AnalogHwMonitor.Core/VuModeSwitch.cs` | Swaps channels 0 and 1 between their VU and non-VU profiles, keyed by channel index |
 | `AnalogHwMonitor.App/` | WinForms tray icon and settings window |
 | `AnalogHwMonitor.Tests/` | xUnit tests for the core, using fake sensors and a fake serial link |
