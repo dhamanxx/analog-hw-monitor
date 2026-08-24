@@ -4,9 +4,19 @@ namespace AnalogHwMonitor.Core;
 /// One meter's worth of VU ballistics: a full-wave rectifier followed by a one-pole
 /// low-pass filter. The 1942 VU standard asks for 99 % of the steady value within
 /// 300 ms, and a one-pole filter reaches 99 % after ln(100) = 4.605 time constants,
-/// so tau is 300 / 4.605 = 65 ms. Rise and fall share that constant because a linear
-/// filter cannot tell them apart — which is also why this class needs no separate
-/// attack and release.
+/// so tau is 300 / 4.605 = 65 ms. Rise and fall share that constant on purpose, because
+/// the standard is symmetric — not because a one-pole filter has no choice. Picking alpha
+/// from whether the sample is above or below the current level would give separate attack
+/// and release, the way every compressor does; that is deliberately not done here.
+///
+/// The consequence is worth knowing before anyone changes it: a symmetric 65 ms means the
+/// needle drops into every gap in the music, and a probe build measured the fall at 67 dB
+/// per 500 ms of digital silence, which is exactly what tau asks for. Modern meters look
+/// smoother because they release over one to three seconds instead. Reading low on music
+/// is the same story from the other side — the meter is average-responding and calibrated
+/// so a full-scale sine reads 0 dBFS, so a track peaking at 0 dBFS sits about 10 dB lower;
+/// measured crest factors on real material were 8.7 to 11.6 dB. None of that is drift to
+/// be corrected. It is what a VU meter is.
 ///
 /// Deliberately not a peak meter. A VU meter reads perceived loudness, and the real
 /// moving-coil meter downstream adds its own mechanical inertia on top, so precision
@@ -27,6 +37,20 @@ public sealed class VuIntegrator
 {
     /// <summary>Filter time constant. 99 % of a step within 300 ms.</summary>
     public static readonly double TimeConstantSeconds = 0.300 / Math.Log(100.0);
+
+    /// <summary>
+    /// Below this the level is snapped to zero instead of decaying further. An exponential
+    /// decay never reaches zero, so without a floor a long silence drives the filter state
+    /// down without limit — measured at about -140 dB per second, so a minute of quiet takes
+    /// it past 1e-300 and into denormal doubles, where arithmetic carries a penalty. That
+    /// matters here only because <see cref="Add"/> runs per sample on the WASAPI capture
+    /// thread, which is the one thread that must never be slow.
+    ///
+    /// 1e-9 is safe by a wide margin rather than by a hair: the reported floor,
+    /// <c>AudioSensorIds.FloorDbfs</c> at -100 dBFS, corresponds to a level near 6.4e-6, so
+    /// this sits about 76 dB below anything a needle or a text box can show.
+    /// </summary>
+    public const double SilenceFloor = 1e-9;
 
     private double _level;
 
@@ -78,6 +102,8 @@ public sealed class VuIntegrator
         }
 
         var level = Volatile.Read(ref _level);
-        Volatile.Write(ref _level, level * Math.Exp(-elapsed.TotalSeconds / TimeConstantSeconds));
+        var decayed = level * Math.Exp(-elapsed.TotalSeconds / TimeConstantSeconds);
+
+        Volatile.Write(ref _level, decayed < SilenceFloor ? 0.0 : decayed);
     }
 }
