@@ -57,9 +57,31 @@ internal static class Program
             return;
         }
 
+        // Audio joins only after the hardware check above. It is not a sensor source in
+        // the sense that check means — a machine where no hardware source could be
+        // opened is still a dead end, and letting the audio source make the list
+        // non-empty would have turned that message box into silence.
+        try
+        {
+            sources.Add(new AudioLevelSensorSource(
+                new WasapiLoopbackAdapter(), log, () => config.VuCompensateVolume));
+        }
+        catch (Exception ex)
+        {
+            // Without it the VU channels read null, which is exactly what the settings
+            // window and the needles already know how to show.
+            log.Write($"Sensor source unavailable — Windows audio: {ex.Message}");
+        }
+
         // From here on the composite absorbs and latches every source fault, so a
-        // source that dies later costs its own readings and nothing else.
-        ISensorSource sensors = new CompositeSensorSource(log, sources.ToArray());
+        // source that dies later costs its own readings and nothing else. The throttle
+        // sits outside it because the tick runs at 25 Hz in VU meter mode while the
+        // hardware behind LibreHardwareMonitor must be polled far more rarely — and it
+        // reads the mode from the same configuration object the tray menu writes, so the
+        // interval follows the tick rate without either side knowing about the other.
+        // See ThrottledSensorSource for what each of the two intervals costs and buys.
+        ISensorSource sensors = new ThrottledSensorSource(
+            new CompositeSensorSource(log, sources.ToArray()), () => config.VuMode);
         sensors.Refresh();
 
         var hadUnassignedChannels = config.Channels.Any(c => string.IsNullOrEmpty(c.SensorId));

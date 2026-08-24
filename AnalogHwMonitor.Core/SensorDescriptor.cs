@@ -4,6 +4,7 @@ public enum SensorKind
 {
     Load,
     Temperature,
+    Audio,
     Other,
 }
 

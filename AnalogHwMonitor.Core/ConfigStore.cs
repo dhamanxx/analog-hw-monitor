@@ -47,6 +47,7 @@ public sealed class ConfigStore
             var config = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(Path), Options);
             if (IsValid(config))
             {
+                SanitizeStash(config!);
                 return new ConfigLoadResult(config!, ConfigLoadOutcome.Loaded);
             }
         }
@@ -69,6 +70,22 @@ public sealed class ConfigStore
         && config.Channels is not null
         && config.Channels.Count == FrameCodec.ChannelCount
         && config.Channels.All(c => c is not null);
+
+    /// <summary>
+    /// Discards a stash that hand-editing has made unusable, and nothing else.
+    /// A broken stash must not go through <see cref="IsValid"/>: that path renames the
+    /// file and replaces it with defaults, which would cost the ten calibration points
+    /// in it — each one measured against a real needle with a screwdriver. The stash is
+    /// a convenience beside them, and <see cref="VuModeSwitch"/> rebuilds a missing one
+    /// from defaults without complaint.
+    /// </summary>
+    private static void SanitizeStash(AppConfig config)
+    {
+        if (!VuModeSwitch.IsUsableStash(config.StashedChannels))
+        {
+            config.StashedChannels = new List<ChannelProfile>();
+        }
+    }
 
     /// <summary>Best-effort backup of the corrupt file; swallows failures so that
     /// recovery never throws.</summary>

@@ -177,12 +177,29 @@ public sealed class ChannelRowControl : UserControl
 
     public void ShowReading(ChannelReading reading)
     {
-        _value.Text = reading.TestMode
-            ? "test"
+        // An audio level is deliberately not shown as a live number. It moves at audio
+        // rates, so five updates a second is a flickering digit nobody can read, and the
+        // number that is actually worth having comes from Apply, which prints the whole
+        // chain into the shared readout below the grid on demand. The unit stays as a
+        // static label so the cell reads as "this channel is in dBFS" rather than broken.
+        //
+        // A missing sensor still wins: a dead capture has to look dead, red dash and all,
+        // exactly like any other channel whose sensor is gone.
+        _value.Text = reading.TestMode ? "test"
+            : reading.SensorMissing ? "—"
+            : ShowsAudioLevel() ? CurrentUnit() ?? "—"
             : reading.Value is { } value ? WithUnit(value) : "—";
         _value.ForeColor = reading.SensorMissing ? Color.Firebrick : SystemColors.ControlText;
         _pwm.Text = reading.Pwm.ToString();
     }
+
+    /// <summary>
+    /// Whether this row is showing an audio level. Keyed on the selected sensor's kind
+    /// rather than on VU meter mode, so it follows the assignment: put an audio level on
+    /// any channel and that channel stops printing a live number too.
+    /// </summary>
+    private bool ShowsAudioLevel() =>
+        _sensor.SelectedItem is SensorDescriptor { Kind: SensorKind.Audio };
 
     /// <summary>
     /// "34.0 %" rather than a bare "34.0". The unit is what tells a load apart from a

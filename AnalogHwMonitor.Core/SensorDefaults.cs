@@ -39,9 +39,22 @@ public static class SensorDefaults
 
             // A sensor that exists but never returns a value is worse than none: it parks
             // a needle at zero and looks like a working channel reading nothing.
+            //
+            // Filtered by kind before the probe, not just inside Match: the probe is a live
+            // Read, and reading an audio level is what starts a WASAPI capture. Without
+            // this, first-run sensor detection would open the audio device — and log its
+            // failure — with VU meter mode switched off. It also spares the probe every
+            // sensor the rule could never pick.
+            //
+            // The order of the two conditions below is load-bearing, and no test guards it:
+            // && short-circuits, so putting isReadable first would probe every sensor again
+            // and bring the startup capture back. The tests here assert which sensor gets
+            // matched, not which ids the probe touched, and they would all still pass —
+            // Match filters by kind internally either way, so the choice is identical while
+            // the side effects are not.
             var readable = isReadable is null
                 ? sensors
-                : sensors.Where(s => isReadable(s.Id)).ToList();
+                : sensors.Where(s => s.Kind == Rules[i].Kind && isReadable(s.Id)).ToList();
 
             config.Channels[i].SensorId =
                 (Match(readable, Rules[i]) ?? Match(sensors, Rules[i]))?.Id;
