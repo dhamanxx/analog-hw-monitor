@@ -18,6 +18,7 @@
 - **Refresh interval je `TimeSpan.FromSeconds(1)` v oboch režimoch.** `AppConfig.VuMode` už refresh neovplyvňuje.
 - **Rámec sa posiela pri každom ticku**, aj keď sa nič nezmenilo. Žiadne „pošli len pri zmene" — zrazilo by to sketch watchdog.
 - **Tick rate zostáva `VuIntervalMs = 40` / `SensorIntervalMs = 1000`** v `TrayApplicationContext`. Tento plán ich nemení.
+- **Všetky komentáre v kóde sú po anglicky** — doc komentáre aj inline, v `Core`, `App` aj `Tests`. Rovnako commit messages. Celá existujúca kódbáza to tak má a slovenčina je v repe len v `docs/superpowers/`. Ak snippet v tomto pláne obsahuje slovenský komentár, je to chyba plánu: prelož ho, neprepisuj slovenčinu do kódu.
 - Komentárový štýl repa: vysvetľuj **prečo**, nie čo, a namerané čísla nes ďalej. Testy sa píšu ako veta o chovaní (`Refresh_ReleasesTheDeviceAfterFiveSecondsWithoutAReader`), nie `Test1`.
 - Hardware testy sú `[SkippableFact]` so `Skip.IfNot(Enabled)` proti `AHM_HARDWARE_TESTS == "1"`.
 - Build a testy: `dotnet build AnalogHwMonitor.sln` a `dotnet test AnalogHwMonitor.sln`.
@@ -65,11 +66,11 @@ Do `AnalogHwMonitor.Tests/AcpiThermalSensorSourceTests.cs` pridaj:
 
 ```csharp
     /// <summary>
-    /// Refresh() beží po novom na poll tasku, kým UI vlákno čítá. Vyprázdniť a znova
-    /// naplniť tú istú kolekciu je vtedy nedefinované chovanie, takže každý Refresh()
-    /// musí publikovať novú instanciu a tú starú nechať na pokoji. Test nepotrebuje
-    /// elevated session ani jednu thermal zone: identita instancie je pozorovateľná
-    /// aj vtedy, keď je zoznam prázdny.
+    /// Refresh() now runs on the poll task while the UI thread reads. Emptying and
+    /// refilling the same collection is then undefined behaviour, so every Refresh()
+    /// must publish a new instance and leave the old one alone. The test needs neither
+    /// an elevated session nor a single thermal zone: instance identity is observable
+    /// even when the list is empty.
     /// </summary>
     [Fact]
     public void Refresh_PublishesANewListRatherThanEmptyingTheOldOne()
@@ -96,10 +97,10 @@ V `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs` nahraď dve mutovateľné po
 
 ```csharp
     /// <summary>
-    /// Hodnoty a deskriptory z jedného Refresh(). Jeden objekt a nie dve polia zámerne:
-    /// pri dvoch samostatných zápisoch by čitateľ mohol vidieť nové deskriptory so
-    /// starými hodnotami. Publikovaná instancia sa už nikdy nemutuje, takže ju smie
-    /// čítať UI vlákno, kým poll task stavia ďalšiu.
+    /// The values and descriptors from one Refresh(). One object rather than two fields
+    /// on purpose: with two separate writes a reader could see the new descriptors beside
+    /// the old values. A published instance is never mutated again, so the UI thread may
+    /// read it while the poll task builds the next one.
     /// </summary>
     private sealed record Snapshot(
         Dictionary<string, float> Values,
@@ -163,11 +164,10 @@ V `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs` nahraď dve mutovateľné po
                 _faultReported = true;
             }
 
-            // Rovnaká semantika ako pôvodné Clear(): po zlyhaní nečítame nič.
-            // new List, NIE Array.Empty<SensorDescriptor>(): to je cachovaný singleton,
-            // takže dva zlyhané refreshy by vrátili tú istú instanciu — presne to, čo
-            // test zo Step 1 zakazuje. Na neelevovanom stroji je pritom táto cesta tá
-            // bežná, nie výnimočná.
+            // Same semantics as the Clear() this replaced: after a failure nothing reads.
+            // A new List rather than Array.Empty<SensorDescriptor>(), which is a cached
+            // singleton — two failed refreshes would hand back the same instance, and on a
+            // machine without elevation this path is the common one, not the rare one.
             Volatile.Write(
                 ref _snapshot,
                 new Snapshot(new Dictionary<string, float>(), new List<SensorDescriptor>()));
@@ -218,10 +218,11 @@ Do `AnalogHwMonitor.Tests/LibreHardwareSensorSourceTests.cs` pridaj:
 
 ```csharp
     /// <summary>
-    /// Discover() a Read() musia čítať snapshot postavený v Refresh(), nie prechádzať
-    /// živý strom — inak sa prechod vráti na UI vlákno a Refresh() na poll tasku ho
-    /// mutuje pod rukami. Identita vráteného zoznamu to dokazuje: dnes vzniká nový
-    /// List na každé volanie, po zmene je to ten istý objekt až do ďalšieho Refresh().
+    /// Discover() and Read() must read the snapshot built in Refresh(), not walk the
+    /// live tree — otherwise the walk moves back to the UI thread and Refresh() on the
+    /// poll task mutates it out from under it. The identity of the returned list proves
+    /// this: today it produces a new List on every call, after the change it is the
+    /// same object until the next Refresh().
     /// </summary>
     [SkippableFact]
     public void Discover_ReturnsTheSameSnapshotUntilTheNextRefresh()
@@ -257,10 +258,10 @@ V `AnalogHwMonitor.Core/LibreHardwareSensorSource.cs` pridaj snapshot a prepíš
 
 ```csharp
     /// <summary>
-    /// Hodnoty a deskriptory z jedného Refresh(). Jeden objekt a nie dve polia zámerne:
-    /// pri dvoch samostatných zápisoch by čitateľ mohol vidieť nové deskriptory so
-    /// starými hodnotami. Publikovaná instancia sa už nemutuje, takže ju smie čítať UI
-    /// vlákno, kým poll task stavia ďalšiu.
+    /// The values and descriptors from one Refresh(). One object rather than two fields
+    /// on purpose: with two separate writes a reader could see the new descriptors
+    /// beside the old values. A published instance is never mutated again, so the UI
+    /// thread may read it while the poll task builds the next one.
     /// </summary>
     private sealed record Snapshot(
         Dictionary<string, float> Values,
@@ -270,14 +271,15 @@ V `AnalogHwMonitor.Core/LibreHardwareSensorSource.cs` pridaj snapshot a prepíš
         new(new Dictionary<string, float>(), Array.Empty<SensorDescriptor>());
 
     /// <summary>
-    /// Jediné miesto, kde sa prechádza strom. Update() aj odčítanie hodnôt sa robia
-    /// v tom istom priechode; stavať snapshot lazy pri prvom Read() by prechod vrátilo
-    /// na UI vlákno a nevyriešilo nič.
+    /// The only place the tree is walked. Update() and reading the values out happen in
+    /// the same pass; building the snapshot lazily on the first Read() would put the walk
+    /// back on the UI thread and solve nothing.
     ///
-    /// Update() má hardware granularitu: pýtať sa na jednu GPU teplotu platí za každú
-    /// hodnotu, ktorú tá GPU vystavuje. Namerané na RTX 4070 je to 77 ms, takmer celé
-    /// GPU Engine performance counters Windowsu, nie driver. Celý AMD CPU cez PawnIO
-    /// je oproti tomu 1,6 ms. Preto je toto na poll tasku a raz za sekundu.
+    /// Update() has hardware granularity: asking for one GPU temperature pays for every
+    /// value that GPU exposes. Measured on an RTX 4070 that is 77 ms, almost all of it
+    /// Windows' own GPU Engine performance counters rather than the driver. The whole AMD
+    /// CPU through PawnIO is 1.6 ms by comparison. That is why this runs on the poll task,
+    /// once a second.
     /// </summary>
     public void Refresh()
     {
@@ -290,8 +292,8 @@ V `AnalogHwMonitor.Core/LibreHardwareSensorSource.cs` pridaj snapshot a prepíš
         {
             var id = sensor.Identifier.ToString();
 
-            // Senzor bez hodnoty sa do slovníka nedá, takže TryGetValue vráti false
-            // a Read() null — presne to, čo vracal predchádzajúci sensor.Value.
+            // A sensor with no value stays out of the dictionary, so TryGetValue returns
+            // false and Read() returns null — exactly what sensor.Value returned before.
             if (sensor.Value is { } value)
             {
                 values[id] = value;
@@ -360,14 +362,15 @@ V `AnalogHwMonitor.Core/AudioLevelSensorSource.cs` pridaj pole:
 
 ```csharp
     /// <summary>
-    /// Serializuje životný cyklus captureu. Refresh() beží na poll tasku a Read() na UI
-    /// vlákne, takže inak by sa Stop() z health checku a TryStart() z čítania mohli
-    /// preložiť a nechať _started == true nad zastaveným captureom — teda obe ručičky
-    /// mŕtve, kým nimi niečo nezatriasa.
+    /// Serialises the capture lifecycle. Refresh() runs on the poll task and Read() on the
+    /// UI thread, so without this the health check's Stop() and a read's TryStart() could
+    /// interleave and leave _started true over a stopped capture — both needles dead until
+    /// something shakes them.
     ///
-    /// OnSamples tento lock zámerne NEBERIE: beží na capture vlákne v rytme buffrov a
-    /// nesmie nikdy čakať na UI vlákno. Komunikuje výhradne cez Volatile/Interlocked
-    /// (_lastBufferTicks, _lastAdvanceTicks, VuIntegrator._level), a to stačí.
+    /// OnSamples deliberately does NOT take this lock: it runs on the capture thread at
+    /// buffer rate and must never wait on the UI thread. It communicates only through
+    /// Volatile/Interlocked (_lastBufferTicks, _lastAdvanceTicks, VuIntegrator._level),
+    /// and that is enough.
     /// </summary>
     private readonly object _lifecycle = new();
 ```
@@ -420,8 +423,8 @@ V `Read()` posuň lock **za** early return pre cudzie id, aby sa composite pri t
         };
 
         // The composite asks every source for every identifier, so most calls here are
-        // about somebody else's sensor. Tento early return je pred lockom zámerne:
-        // z piatich kanálov sú audio dva, takže tri volania za tick sa nezamknú vôbec.
+        // about somebody else's sensor. This early return sits before the lock on purpose:
+        // two of the five channels are audio, so three calls a tick never take it at all.
         if (channel < 0)
         {
             return null;
@@ -531,17 +534,17 @@ V `AnalogHwMonitor.Core/SerialMeterLink.cs`:
 
 ```csharp
     /// <summary>
-    /// Serializuje port. Send() beží na sender tasku, kým PortName setter beží na UI
-    /// vlákne (SettingsForm mení COM port za behu) a disponuje _port — bez tohto by sa
-    /// port disponoval spod prebiehajúceho Write().
+    /// Serialises the port. Send() runs on the sender task while the PortName setter runs
+    /// on the UI thread (the settings window changes the COM port at runtime) and disposes
+    /// _port — without this the port would be disposed under a write in progress.
     /// </summary>
     private readonly object _gate = new();
 
     /// <summary>
-    /// Kópia _port?.IsOpen mimo locku. UI vlákno číta IsConnected každý tick pre
-    /// tooltip a nesmie na zaseknutom zápise čakať — pod lockom by to znamenalo
-    /// presunúť tuhnutie UI, nie ho odstrániť. Čítanie disponovaného SerialPortu by
-    /// navyše samo hodilo ObjectDisposedException.
+    /// A copy of _port?.IsOpen kept outside the lock. The UI thread reads IsConnected every
+    /// tick for the tooltip and must not wait on a stuck write — under the lock that would
+    /// move the UI stall rather than remove it. Reading a disposed SerialPort would also
+    /// throw ObjectDisposedException on its own.
     /// </summary>
     private volatile bool _connected;
 
@@ -672,10 +675,10 @@ using Xunit;
 namespace AnalogHwMonitor.Tests;
 
 /// <summary>
-/// Testuje sa RefreshOnce(), nie RunAsync(). Obsahom RunAsync je PeriodicTimer, teda
-/// nie náš kód, a FakeTimeProvider v tomto repe prepisuje len GetUtcNow(), nie
-/// CreateTimer() — test cez RunAsync by čakal na reálne hodiny. Presne kvôli tomu je
-/// logika oddelená od kadencie.
+/// Tests RefreshOnce(), not RunAsync(). RunAsync contains a PeriodicTimer, which is not
+/// our code, and this repo's FakeTimeProvider overrides only GetUtcNow(), not
+/// CreateTimer() — a test through RunAsync would wait on the wall clock. That is exactly
+/// why the logic is separated from the cadence.
 /// </summary>
 public class SensorRefreshLoopTests
 {
@@ -691,9 +694,9 @@ public class SensorRefreshLoopTests
     }
 
     /// <summary>
-    /// Neodchytená výnimka v fire-and-forget tasku by znamenala, že senzory prestanú
-    /// tichúčko refreshovať a ručičky navždy zamrznú na posledných hodnotách — teda
-    /// softvér, ktorý vyzerá funkčne a nie je. Preto try vnútri slučky, nie okolo nej.
+    /// An unhandled exception in a fire-and-forget task would mean the sensors quietly
+    /// stop refreshing and the needles freeze forever on their last values — software that
+    /// looks like it works and does not. Hence the try inside the loop, not around it.
     /// </summary>
     [Fact]
     public void RefreshOnce_SurvivesAThrowingSource()
@@ -706,9 +709,9 @@ public class SensorRefreshLoopTests
     }
 
     /// <summary>
-    /// Slučka beží raz za sekundu po celý život tray aplikácie. Nelatchovaný zápis by
-    /// naplnil log.txt megabajtom za deň a odrotoval z neho celú zaujímavú históriu —
-    /// tá istá disciplína, akú už majú SerialMeterLink a CompositeSensorSource.
+    /// The loop runs once a second for the life of the tray application. An unlatched write
+    /// would fill log.txt at about a megabyte a day and rotate the interesting history
+    /// away — the same discipline SerialMeterLink and CompositeSensorSource already keep.
     /// </summary>
     [Fact]
     public void RefreshOnce_LogsAPersistentFaultOnlyOnce()
@@ -743,26 +746,27 @@ Create `AnalogHwMonitor.Core/SensorRefreshLoop.cs`:
 namespace AnalogHwMonitor.Core;
 
 /// <summary>
-/// Vlastní kadenciu <see cref="ISensorSource.Refresh"/>. Refresh() je najdrahšia vec
-/// v celej aplikácii a bežal na UI vlákne, kde 99 ms zastavilo ručičku VU metra —
-/// dlhšie, než je 65 ms časová konštanta <see cref="VuIntegrator"/>. Preto má vlastný
-/// task.
+/// Owns the cadence of <see cref="ISensorSource.Refresh"/>. Refresh() is the most
+/// expensive thing in the application and it used to run on the UI thread, where 99 ms
+/// stalled a VU meter needle — longer than the 65 ms time constant of
+/// <see cref="VuIntegrator"/>. Hence a task of its own.
 ///
-/// Kde tých 99 ms sedí, aby to nikto nemusel merať znova: 77 ms je update NVIDIA GPU,
-/// takmer celé GPU Engine performance counters Windowsu; 13 ms je WMI dotaz na thermal
-/// zones; 7 ms je audio health check; a celé AMD CPU, PawnIO a všetko, je 1,6 ms.
-/// Pred odstránením jedného zbytočného COM volania z audio checku to bolo 218 ms.
+/// Where those 99 ms sit, so nobody has to measure it again: 77 ms is the NVIDIA GPU's
+/// update, almost entirely Windows' own GPU Engine performance counters; 13 ms is the WMI
+/// thermal-zone query; 7 ms is the audio health check; and the whole AMD CPU, PawnIO and
+/// all, is 1.6 ms. It was 218 ms before one needless COM call was removed from the audio
+/// check.
 ///
-/// Interval je jedna sekunda v oboch režimoch. Predchodca tejto triedy
-/// (ThrottledSensorSource) mal vo VU režime tri sekundy, ale nie kvôli CPU — kvôli tomu,
-/// že refresh na UI vlákne zastavil ručičku v pohybe. Tento dôvod tu zaniká, a jedna
-/// sekunda navyše znamená, že audio health check si všimne zmenu default zariadenia
-/// (slúchadlá v/von) do sekundy namiesto troch. Cena je 99 ms práce za sekundu, teda
-/// asi 10 % jedného jadra nepretržite; takmer celé to sú tie GPU counters, nie niečo,
-/// čo táto aplikácia počíta.
+/// The interval is one second in both modes. This class's predecessor
+/// (ThrottledSensorSource) held three seconds in VU meter mode, but not for CPU — for the
+/// fact that a refresh on the UI thread stalled a needle in motion. That reason does not
+/// exist here, and the extra two seconds buy something: the audio health check notices a
+/// default-device change (headphones in, speakers out) within a second instead of three.
+/// The price is 99 ms of work per second, about 10 % of one core continuously; almost all
+/// of it is those GPU counters rather than anything this application computes.
 ///
-/// Trieda nevlastní logiku, len kadenciu — <see cref="RefreshOnce"/> je to, čo sa dá
-/// otestovať bez hodín, rovnaký strih, aký má <see cref="MonitorService"/>.
+/// The class owns no logic, only cadence — <see cref="RefreshOnce"/> is the part that can
+/// be tested without a clock, the same cut <see cref="MonitorService"/> already makes.
 /// </summary>
 public sealed class SensorRefreshLoop
 {
@@ -779,10 +783,10 @@ public sealed class SensorRefreshLoop
     }
 
     /// <summary>
-    /// Jeden refresh. <see cref="CompositeSensorSource"/> už pohlcuje a latchuje poruchu
-    /// každého jednotlivého source, takže sem sa dostane len zlyhanie composite samotného
-    /// — ale to nesmie zabiť slučku. Neodchytená výnimka v fire-and-forget tasku znamená
-    /// zamrznuté hodnoty a ručičky, ktoré vyzerajú ako funkčná aplikácia.
+    /// One refresh. <see cref="CompositeSensorSource"/> already absorbs and latches each
+    /// individual source's fault, so only a failure of the composite itself reaches here —
+    /// and that must not kill the loop. An unhandled exception in a fire-and-forget task
+    /// means frozen values and needles that look like a working application.
     /// </summary>
     public void RefreshOnce()
     {
@@ -802,9 +806,10 @@ public sealed class SensorRefreshLoop
     }
 
     /// <summary>
-    /// Musí sa štartovať cez <c>Task.Run</c>. Volaný priamo z UI vlákna by prvý await
-    /// zmarshalloval continuation späť naň cez WinForms SynchronizationContext a
-    /// Refresh() by na UI vlákne bežal ďalej — celá zmena by bola no-op.
+    /// Must be started through <c>Task.Run</c>. Called straight from the UI thread, the
+    /// first await would marshal its continuation back onto it through the WinForms
+    /// SynchronizationContext and Refresh() would keep running there — the whole change
+    /// would be a no-op.
     /// </summary>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -819,8 +824,8 @@ public sealed class SensorRefreshLoop
         }
         catch (OperationCanceledException)
         {
-            // Normálne vypnutie. Odchytené tu, aby task dobehol do stavu Completed a
-            // vypínanie nemuselo rozbaľovať AggregateException.
+            // A normal shutdown. Caught here so the task reaches Completed and shutdown
+            // does not have to unwrap an AggregateException.
         }
     }
 }
@@ -864,8 +869,8 @@ namespace AnalogHwMonitor.Tests;
 
 public class QueuedMeterLinkTests
 {
-    /// <summary>Signalizuje prvý rámec cez TaskCompletionSource, takže test nemusí
-    /// polovať ani čítať List cez hranicu vlákien.</summary>
+    /// <summary>Signals the first frame through a TaskCompletionSource, so the test
+    /// never has to poll or read a List across a thread boundary.</summary>
     private sealed class SignallingMeterLink : IMeterLink
     {
         private readonly TaskCompletionSource<string> _first = new();
@@ -884,9 +889,9 @@ public class QueuedMeterLinkTests
     }
 
     /// <summary>
-    /// Prvý zápis uvízne, kým ho test nepustí — zaseknutý port. Oba príchody
-    /// signalizuje cez TaskCompletionSource, takže test nikdy nečítá _frames, kým doň
-    /// pumpa ešte môže zapisovať.
+    /// The first write hangs until the test releases it — a jammed port. Both arrivals
+    /// are signalled through a TaskCompletionSource, so the test never reads _frames
+    /// while the pump could still be writing into it.
     /// </summary>
     private sealed class BlockingMeterLink : IMeterLink
     {
@@ -902,7 +907,7 @@ public class QueuedMeterLinkTests
 
         public Task SecondArrived => _secondArrived.Task;
 
-        /// <summary>Zapisuje výhradne pumpa. Čítaj až po dobehnutí jej tasku.</summary>
+        /// <summary>Written exclusively by the pump. Read only after its task has finished.</summary>
         public IReadOnlyList<string> Frames => _frames;
 
         public bool IsConnected => true;
@@ -946,8 +951,8 @@ public class QueuedMeterLinkTests
     }
 
     /// <summary>
-    /// Kapacita 1 a DropOldest: pre ručičku je zastaraný rámec bezcenný, takže kým je
-    /// zápis zaseknutý, medziľahlé rámce sa zahodia a pošle sa len najnovší.
+    /// Capacity 1 and DropOldest: a stale frame is worthless to a needle, so while the
+    /// write is stuck the intermediate frames are dropped and only the newest is sent.
     /// </summary>
     [Fact]
     public async Task Send_KeepsOnlyTheNewestFrameWhileTheLinkIsBusy()
@@ -961,8 +966,8 @@ public class QueuedMeterLinkTests
         link.Send("frame-1");
         await inner.FirstArrived.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Pumpa teraz visí vnútri Send("frame-1"). Kanál drží jeden rámec, takže
-        // frame-2 a frame-3 vypadnú a prežije len frame-4.
+        // The pump is now hanging inside Send("frame-1"). The channel holds one frame,
+        // so frame-2 and frame-3 fall out and only frame-4 survives.
         link.Send("frame-2");
         link.Send("frame-3");
         link.Send("frame-4");
@@ -973,7 +978,7 @@ public class QueuedMeterLinkTests
         cts.Cancel();
         await pump.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Až tu — pumpa dobehla, takže _frames už nikto nemutuje.
+        // Only here — the pump has finished, so nobody mutates _frames any more.
         Assert.Equal(new[] { "frame-1", "frame-4" }, inner.Frames);
     }
 
@@ -1040,22 +1045,23 @@ using System.Threading.Channels;
 namespace AnalogHwMonitor.Core;
 
 /// <summary>
-/// Odpojí odoslanie rámca od volajúceho. <see cref="Send"/> po novom znamená „zaraď" —
-/// mierna lož v mene zdedenom z <see cref="IMeterLink"/>, ktorá je zaplatená týmto
-/// komentárom. Čestnejšie meno by stálo zmenený konstruktor MonitorService, prepísané
-/// jeho testy a nový fake, a to všetko za identické chovanie.
+/// Decouples sending a frame from the caller. <see cref="Send"/> now means "enqueue" — a
+/// mild lie in a name inherited from <see cref="IMeterLink"/>, and this comment is what
+/// pays for it. An honester name would cost a changed MonitorService constructor, its
+/// rewritten tests and a new fake, all for identical behaviour.
 ///
-/// Dôvod je, že <see cref="SerialMeterLink.Send"/> je blokujúci zápis a bežal na UI
-/// vlákne. Na zaseknutom prevodníku to nie sú mikrosekundy, ale sekundy.
+/// The reason is that <see cref="SerialMeterLink.Send"/> is a blocking write and it used
+/// to run on the UI thread. On a wedged adapter that is not microseconds but seconds.
 ///
-/// Kanál má kapacitu 1 a <see cref="BoundedChannelFullMode.DropOldest"/>: pre ručičku
-/// je zastaraný rámec bezcenný, takže keď je zápis pomalý, medziľahlé rámce sa zahodia
-/// a odošle sa len najnovší. Nezakrýva to problém s priepustnosťou — rámec má ~22
-/// bajtov, pri 115200 baud ~1,5 ms, teda pri 21 Hz asi 3 % vyťaženia linky. Kapacita 1
-/// je tam pre patologický prípad, nie pre bežný režim.
+/// The channel holds one frame with <see cref="BoundedChannelFullMode.DropOldest"/>: a
+/// stale frame is worthless to a needle, so while the write is slow the intermediate
+/// frames are dropped and only the newest is sent. This does not paper over a throughput
+/// problem — a frame is ~22 bytes, ~1.5 ms at 115200 baud, so about 3 % of the link at
+/// 21 Hz. The capacity of one is there for the pathological case, not the normal one.
 ///
-/// Asynchrónne I/O sa nezavádza zámerne. Voči zvyšku aplikácie je blokujúci Write na
-/// vyhradenom tasku presne tak neblokujúci ako WriteAsync, a je to o triedu menej kódu.
+/// Async I/O is deliberately not introduced. To the rest of the application a blocking
+/// Write on a dedicated task is exactly as non-blocking as WriteAsync, and it is a class
+/// less code.
 /// </summary>
 public sealed class QueuedMeterLink : IMeterLink
 {
@@ -1076,16 +1082,16 @@ public sealed class QueuedMeterLink : IMeterLink
     public string? LastError => _inner.LastError;
 
     /// <summary>
-    /// Zaradí rámec a vráti sa. Nikdy neblokuje a nikdy nehodí: <c>DropOldest</c> robí
-    /// zo <c>TryWrite</c> vždy úspech, a po <see cref="Dispose"/> je návratové
-    /// <c>false</c> len „vypíname sa", nie chyba.
+    /// Enqueues a frame and returns. Never blocks and never throws: <c>DropOldest</c> makes
+    /// <c>TryWrite</c> always succeed, and after <see cref="Dispose"/> a <c>false</c> return
+    /// only means "we are shutting down", not a failure.
     /// </summary>
     public void Send(string frame) => _frames.Writer.TryWrite(frame);
 
     /// <summary>
-    /// Musí sa štartovať cez <c>Task.Run</c>. Volaný priamo z UI vlákna by continuation
-    /// zmarshalloval späť naň cez WinForms SynchronizationContext a zápis by na UI
-    /// vlákne zostal — celá zmena by bola no-op.
+    /// Must be started through <c>Task.Run</c>. Called straight from the UI thread it would
+    /// marshal its continuations back onto it through the WinForms SynchronizationContext
+    /// and the write would stay on the UI thread — the whole change would be a no-op.
     /// </summary>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -1100,7 +1106,7 @@ public sealed class QueuedMeterLink : IMeterLink
         }
         catch (OperationCanceledException)
         {
-            // Normálne vypnutie.
+            // A normal shutdown.
         }
     }
 
@@ -1149,8 +1155,8 @@ V `AnalogHwMonitor.Tests/MonitorServiceTests.cs` nahraď `Tick_RefreshesTheHardw
 
 ```csharp
     /// <summary>
-    /// Refresh() vlastní SensorRefreshLoop na vlastnom tasku. Keby ho Tick() volal tiež,
-    /// vo VU režime by 99 ms práce bežalo 21× za sekundu na UI vlákne.
+    /// Refresh() is owned by SensorRefreshLoop on its own task. If Tick() called it too,
+    /// in VU mode 99 ms of work would run 21 times a second on the UI thread.
     /// </summary>
     [Fact]
     public void Tick_DoesNotRefreshTheHardware()
@@ -1180,10 +1186,11 @@ Expected: FAIL — `Assert.Equal() Failure: Expected 0, Actual 1`.
 /// frame down the link. Owns no timer and no threads — the caller decides when a tick
 /// happens.
 ///
-/// Nerefreshuje. Hardware obnovuje <see cref="SensorRefreshLoop"/> na vlastnom tasku raz
-/// za sekundu, pretože Refresh() je 99 ms a na UI vlákne zastavil ručičku VU metra.
-/// Tick() teda čítá to, čo tam posledný refresh nechal — čo je pre teploty a záťaž
-/// presne v poriadku, a audio úroveň je aj tak živá, keďže sa počíta na capture vlákne.
+/// Does not refresh. Hardware is refreshed by <see cref="SensorRefreshLoop"/> on its own
+/// task once a second, because Refresh() is 99 ms and stalled the VU meter needle on the
+/// UI thread. Tick() therefore reads whatever the last refresh left there — which is
+/// exactly fine for temperatures and load, and the audio level is live anyway, since it
+/// is computed on the capture thread.
 /// </summary>
 ```
 
@@ -1205,10 +1212,11 @@ Namerané čísla z jeho komentárov už sú v `SensorRefreshLoop` z Task 5 — 
 Do signatúry konstruktora pridaj `SensorRefreshLoop refreshLoop` ako posledný parameter a na koniec tela konstruktora, **pred** `_log.Write($"Started on ...")`:
 
 ```csharp
-        // Task.Run a nie priame zavolanie: konstruktor beží na UI vlákne, kde je
-        // nainštalovaný WinForms SynchronizationContext, a ten by continuation po prvom
-        // await zmarshalloval späť naň — Refresh() by na UI vlákne bežal ďalej a celá
-        // zmena by bola no-op, ktorý sa nedá odhaliť inak než profilerom.
+        // Task.Run rather than a direct call: the constructor runs on the UI thread,
+        // where the WinForms SynchronizationContext is installed, and it would marshal
+        // the continuation after the first await back onto it — Refresh() would keep
+        // running on the UI thread and the whole change would be a no-op that only a
+        // profiler could catch.
         _pollTask = Task.Run(() => refreshLoop.RunAsync(_cts.Token));
 ```
 
@@ -1224,10 +1232,10 @@ Prepíš `Dispose`:
 
             _cts.Cancel();
 
-            // Cancellation nepreruší už rozbehnutý blokujúci zápis ani prebiehajúci
-            // 99 ms Refresh(), takže tu je strop. Na zaseknutom porte to znamená až dve
-            // sekundy blokovaného UI vlákna pri exite — lepšie než trhať port a driver
-            // spod prebiehajúcej operácie.
+            // Cancellation does not interrupt a blocking write already in flight, nor
+            // an in-progress 99 ms Refresh(), hence the cap here. On a jammed port that
+            // means up to two seconds of blocked UI thread on exit — better than
+            // ripping the port and driver out from under an operation in progress.
             Task.WaitAll(new[] { _pollTask }, TimeSpan.FromSeconds(2));
             _cts.Dispose();
 
@@ -1245,14 +1253,14 @@ Prepíš `Dispose`:
 
 ```csharp
         // From here on the composite absorbs and latches every source fault, so a
-        // source that dies later costs its own readings and nothing else. Refresh()
-        // už nevolá tick — vlastní ho SensorRefreshLoop na vlastnom tasku raz za
-        // sekundu, v oboch režimoch. Preto tu nie je žiadny throttle a preto VuMode
-        // interval refreshu neovplyvňuje.
+        // source that dies later costs its own readings and nothing else. Refresh() is
+        // no longer called by the tick — it is owned by SensorRefreshLoop on its own
+        // task once a second, in both modes. That is why there is no throttle here and
+        // why VuMode no longer affects the refresh interval.
         ISensorSource sensors = new CompositeSensorSource(log, sources.ToArray());
 
-        // Load-bearing, nie zvyk: AssignSensors nižšie číta snapshot, ktorý stavia
-        // práve tento Refresh(). Bez neho by videlo prázdny snapshot a nenamapovalo nič.
+        // Load-bearing, not habit: AssignSensors below reads the snapshot that this very
+        // Refresh() builds. Without it, it would see an empty snapshot and map nothing.
         sensors.Refresh();
 ```
 
@@ -1318,10 +1326,10 @@ V `AnalogHwMonitor.App/Program.cs` nahraď posledné riadky:
 ```csharp
         var link = new SerialMeterLink(new SerialPortFactory(), config.ComPort, log);
 
-        // MonitorService píše do frontu, nie na port. Tick beží na UI vlákne a
-        // SerialPort.Write je na zaseknutom prevodníku otázka sekúnd, nie mikrosekúnd.
-        // Tray a SettingsForm držia ďalej SerialMeterLink: potrebujú PortName a
-        // IsConnected, ktoré na fronte nemajú čo robiť.
+        // MonitorService writes into the queue, not to the port. Tick runs on the UI
+        // thread, and SerialPort.Write on a jammed adapter is a matter of seconds, not
+        // microseconds. The tray and SettingsForm keep holding SerialMeterLink: they
+        // need PortName and IsConnected, which have no business being on the queue.
         var sendLoop = new QueuedMeterLink(link);
         var monitor = new MonitorService(sensors, sendLoop, config, log);
         var refreshLoop = new SensorRefreshLoop(sensors, log);
