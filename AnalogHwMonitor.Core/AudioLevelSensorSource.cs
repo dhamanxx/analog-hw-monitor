@@ -96,9 +96,9 @@ public sealed class AudioLevelSensorSource : ISensorSource
 
     /// <summary>
     /// Releases the device when nobody has asked for a level lately, and follows the
-    /// default output device when it changes. Both ride the tick loop's Refresh(), which
-    /// <see cref="ThrottledSensorSource"/> holds to once a second — the right rate for a
-    /// health check, and the reason neither needs a COM notification client.
+    /// default output device when it changes. Both ride the Refresh() that
+    /// <see cref="SensorRefreshLoop"/> drives once a second — the right rate for a health
+    /// check, and the reason neither needs a COM notification client.
     /// </summary>
     public void Refresh()
     {

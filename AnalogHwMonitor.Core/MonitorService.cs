@@ -1,9 +1,15 @@
 namespace AnalogHwMonitor.Core;
 
 /// <summary>
-/// One tick of the whole system: refresh the hardware, turn five readings into five
-/// PWM bytes, and push one frame down the link. Owns no timer and no threads —
-/// the caller decides when a tick happens.
+/// One tick of the whole system: turn five readings into five PWM bytes and push one
+/// frame down the link. Owns no timer and no threads — the caller decides when a tick
+/// happens.
+///
+/// Does not refresh. Hardware is refreshed by <see cref="SensorRefreshLoop"/> on its own
+/// task once a second, because Refresh() is 99 ms and stalled the VU meter needle on the
+/// UI thread. Tick() therefore reads whatever the last refresh left there — which is
+/// exactly fine for temperatures and load, and the audio level is live anyway, since it
+/// is computed on the capture thread.
 /// </summary>
 public sealed class MonitorService : IDisposable
 {
@@ -53,8 +59,6 @@ public sealed class MonitorService : IDisposable
 
     public void Tick()
     {
-        _sensors.Refresh();
-
         var pwmValues = new byte[FrameCodec.ChannelCount];
         var readings = new List<ChannelReading>(FrameCodec.ChannelCount);
 

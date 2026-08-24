@@ -12,10 +12,10 @@ namespace AnalogHwMonitor.Core;
 /// all, is 1.6 ms. It was 218 ms before one needless COM call was removed from the audio
 /// check.
 ///
-/// The interval is one second in both modes. This class's predecessor
-/// (ThrottledSensorSource) held three seconds in VU meter mode, but not for CPU — for the
-/// fact that a refresh on the UI thread stalled a needle in motion. That reason does not
-/// exist here, and the extra two seconds buy something: the audio health check notices a
+/// The interval is one second in both modes. The throttling decorator this class replaced
+/// held three seconds in VU meter mode, but not for CPU — for the fact that a refresh on
+/// the UI thread stalled a needle in motion. That reason does not exist here, and dropping
+/// the extra two seconds buys something: the audio health check notices a
 /// default-device change (headphones in, speakers out) within a second instead of three.
 /// The price is 99 ms of work per second, about 10 % of one core continuously; almost all
 /// of it is those GPU counters rather than anything this application computes.

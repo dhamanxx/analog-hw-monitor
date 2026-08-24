@@ -39,15 +39,19 @@ public class MonitorServiceTests
         Assert.Equal(new[] { "V:0,128,255,0,255\n" }, link.Frames);
     }
 
+    /// <summary>
+    /// Refresh() is owned by SensorRefreshLoop on its own task. If Tick() called it too,
+    /// in VU mode 99 ms of work would run 21 times a second on the UI thread.
+    /// </summary>
     [Fact]
-    public void Tick_RefreshesTheHardwareExactlyOnce()
+    public void Tick_DoesNotRefreshTheHardware()
     {
         var sensors = SensorsAt(10, 10, 10, 40, 40);
         using var service = new MonitorService(sensors, new FakeMeterLink(), ConfigWithSensors(), NullLog.Instance);
 
         service.Tick();
 
-        Assert.Equal(1, sensors.RefreshCount);
+        Assert.Equal(0, sensors.RefreshCount);
     }
 
     [Fact]

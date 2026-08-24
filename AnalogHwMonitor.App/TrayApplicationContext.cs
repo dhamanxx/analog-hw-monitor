@@ -5,6 +5,10 @@ namespace AnalogHwMonitor.App;
 /// <summary>
 /// Owns the 1 Hz timer and the tray icon. The timer runs on the UI thread, so
 /// MonitorService and the settings window never need to marshal anything.
+///
+/// It also owns the lifetime of the <see cref="SensorRefreshLoop"/> task, which is the one
+/// piece of this application deliberately kept off the UI thread — see the Task.Run in the
+/// constructor and the shutdown ordering in Dispose.
 /// </summary>
 public sealed class TrayApplicationContext : ApplicationContext
 {
@@ -15,6 +19,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly IAppLog _log;
     private readonly NotifyIcon _icon;
     private readonly System.Windows.Forms.Timer _timer;
+    private readonly CancellationTokenSource _cts = new();
+    private readonly Task _pollTask;
     private SettingsForm? _settings;
     private bool _tickFailureReported;
 
@@ -35,7 +41,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         SerialMeterLink link,
         ConfigStore store,
         ISensorSource sensors,
-        IAppLog log)
+        IAppLog log,
+        SensorRefreshLoop refreshLoop)
     {
         _monitor = monitor;
         _link = link;
@@ -71,6 +78,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
         _timer.Tick += (_, _) => OnTick();
         _timer.Start();
+
+        // Task.Run rather than a direct call: the constructor runs on the UI thread,
+        // where the WinForms SynchronizationContext is installed, and it would marshal
+        // the continuation after the first await back onto it — Refresh() would keep
+        // running on the UI thread and the whole change would be a no-op that only a
+        // profiler could catch.
+        _pollTask = Task.Run(() => refreshLoop.RunAsync(_cts.Token));
 
         // Dispose writes "Stopped."; without this line a clean run leaves log.txt with
         // one entry and no way to tell when the session it ended actually began.
@@ -191,6 +205,16 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             _timer.Stop();
             _timer.Dispose();
+
+            _cts.Cancel();
+
+            // Cancellation does not interrupt a blocking write already in flight, nor
+            // an in-progress 99 ms Refresh(), hence the cap here. On a jammed port that
+            // means up to two seconds of blocked UI thread on exit — better than
+            // ripping the port and driver out from under an operation in progress.
+            Task.WaitAll(new[] { _pollTask }, TimeSpan.FromSeconds(2));
+            _cts.Dispose();
+
             _icon.Visible = false;
             _icon.Dispose();
             _monitor.Dispose();

@@ -18,7 +18,7 @@ public sealed class LibreHardwareSensorSource : ISensorSource
             // Update() has hardware granularity: asking for one GPU temperature pays for
             // every value that GPU exposes. Measured on an RTX 4070 that is 77 ms, almost
             // all of it Windows' own GPU Engine performance counters rather than anything
-            // the driver does — see ThrottledSensorSource for how rarely this is called.
+            // the driver does — see SensorRefreshLoop for how rarely this is called.
             hardware.Update();
 
             foreach (var subHardware in hardware.SubHardware)
