@@ -16,8 +16,13 @@ namespace AnalogHwMonitor.Core;
 public interface ISensorSource : IDisposable
 {
     /// <summary>
-    /// Polls the hardware once. Called on the poll task, never on the UI thread — see the
-    /// interface's thread model above.
+    /// Polls the hardware once. Called on the poll task for the life of the application —
+    /// with one exception, and it is load-bearing rather than an oversight:
+    /// <c>Program.cs</c> calls it once on the UI thread at startup, before the poll task
+    /// exists, because <see cref="SensorDefaults.AssignSensors"/> reads a snapshot that
+    /// only this method builds. That call and the poll task never overlap, so an
+    /// implementation still only has to be safe against a concurrent
+    /// <see cref="Read"/>/<see cref="Discover"/> — see the interface's thread model above.
     /// </summary>
     void Refresh();
 

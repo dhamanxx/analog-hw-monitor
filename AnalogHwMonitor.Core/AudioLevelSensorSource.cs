@@ -26,9 +26,16 @@ public sealed class AudioLevelSensorSource : ISensorSource
     public static readonly TimeSpan SilenceGap = TimeSpan.FromMilliseconds(150);
 
     /// <summary>
-    /// Ceiling on volume compensation. At 5 % volume the correction is about +26 dB;
-    /// without a limit, a quiet machine's dither noise floor would be pulled up to full
-    /// scale and peg both needles.
+    /// Ceiling on volume compensation. Without a limit, a quiet machine's dither noise
+    /// floor would be pulled up to full scale and peg both needles.
+    ///
+    /// What gets compensated is <c>IAudioLoopbackCapture.VolumeDb</c>, which the adapter
+    /// reads from the endpoint's <c>MasterVolumeLevel</c> — the attenuation in decibels,
+    /// so negating it recovers the level exactly. Note that this is not the same as
+    /// 20·log10 of the volume slider's position: Windows maps the slider to decibels
+    /// through a taper that is device-dependent, so there is no fixed slider percentage
+    /// at which this ceiling starts to bite. A probe build on one machine read -6.07 dB
+    /// with the compensation mirroring it exactly and the ceiling never reached.
     /// </summary>
     public const double MaxCompensationDb = 40.0;
 

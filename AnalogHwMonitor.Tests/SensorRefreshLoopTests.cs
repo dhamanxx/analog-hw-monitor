@@ -60,12 +60,12 @@ public class SensorRefreshLoopTests
 
     /// <summary>
     /// The latch's reset path is otherwise unproven: a success has to clear
-    /// <c>_reportedError</c>, or a source that recovers and then fails differently would
-    /// stay silent forever — the one failure mode that hides every other one, because
-    /// nothing would ever appear in log.txt again.
+    /// <c>_reportedError</c>, or a source that recovers and then fails again stays silent
+    /// forever — the one failure mode that hides every other one, because nothing would
+    /// ever appear in log.txt again.
     /// </summary>
     [Fact]
-    public void RefreshOnce_LogsAgainAfterARecoveryFollowedByADifferentFault()
+    public void RefreshOnce_LogsAgainWhenTheSameFaultReturnsAfterARecovery()
     {
         var log = new RecordingLog();
         var sensors = new FaultySensorSource { RefreshFault = "fault A" };
@@ -76,11 +76,14 @@ public class SensorRefreshLoopTests
         sensors.RefreshFault = null;
         loop.RefreshOnce();
 
-        sensors.RefreshFault = "fault B";
+        // The SAME message again, deliberately. A different one would log twice whether or
+        // not the success in between cleared the latch, so it would prove nothing — the
+        // first version of this test made exactly that mistake. Repeating the message means
+        // the second line can only appear because the reset happened.
+        sensors.RefreshFault = "fault A";
         loop.RefreshOnce();
 
         Assert.Equal(2, log.Lines.Count);
-        Assert.Contains("fault A", log.Lines[0]);
-        Assert.Contains("fault B", log.Lines[1]);
+        Assert.All(log.Lines, line => Assert.Contains("fault A", line));
     }
 }
