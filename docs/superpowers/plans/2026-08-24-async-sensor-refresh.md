@@ -1359,7 +1359,16 @@ V `Dispose` rozšír čakanie na oba tasky:
             Task.WaitAll(new[] { _pollTask, _sendTask }, TimeSpan.FromSeconds(2));
 ```
 
-`_monitor.Dispose()` zostáva až za tým čakaním — disponuje `QueuedMeterLink`, ktorý disponuje `SerialMeterLink`, a to sa nesmie stať, kým sender task ešte môže zapisovať.
+`_monitor.Dispose()` zostáva až za tým čakaním — disponuje `QueuedMeterLink`, ktorý disponuje `SerialMeterLink`, a to sa nemá stať, kým sender task ešte môže zapisovať.
+
+**Na happy path to drží, na timeout path nie, a to treba priznať v komentári, nie zamlčať.** `Task.WaitAll` má strop dve sekundy. Keď vyprší — teda presne na zaseknutom porte, kde `SerialPort.Write` visí až do svojho `WriteTimeout` 1000 ms — pumpa ešte beží a `_inner.Dispose()` jej disponuje port pod rukami. Vyhodí to `ObjectDisposedException` alebo `IOException` na sender tasku, čo **nie je** `OperationCanceledException`, takže `catch` v `RunAsync` to nepohltí a task skončí faulted namiesto completed.
+
+Prijímame to, a tu je prečo:
+
+- Proces sa v tej chvíli ukončuje. Neodpozorovaná faulted `Task` je od .NET 4.5 runtimom ignorovaná — nezhodí proces a nikto ju nikdy nepozrie.
+- Alternatíva je čakať bez stropu, čo na zaseknutom porte zavesí exit. To je horšie: užívateľ klikol Exit a appka sa neukončí.
+
+Čo z toho vyplýva pre implementáciu: do doc komentára `QueuedMeterLink.Dispose()` napíš predpoklad, že volajúci už počkal na sender task, a do `TrayApplicationContext.Dispose()` napíš, čo sa stane, keď strop vyprší. Nepridávaj kvôli tomu žiadnu novú mechaniku.
 
 - [ ] **Step 3: Build and run the tests**
 
