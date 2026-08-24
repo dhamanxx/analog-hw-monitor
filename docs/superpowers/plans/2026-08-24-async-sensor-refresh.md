@@ -105,11 +105,11 @@ V `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs` nahraď dve mutovateľné po
         Dictionary<string, float> Values,
         IReadOnlyList<SensorDescriptor> Descriptors);
 
-    private static readonly Snapshot Empty =
+    private readonly IAppLog _log;
+
+    private Snapshot _snapshot =
         new(new Dictionary<string, float>(), Array.Empty<SensorDescriptor>());
 
-    private readonly IAppLog _log;
-    private Snapshot _snapshot = Empty;
     private bool _faultReported;
 
     public AcpiThermalSensorSource(IAppLog log) => _log = log;
@@ -164,7 +164,12 @@ V `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs` nahraď dve mutovateľné po
             }
 
             // Rovnaká semantika ako pôvodné Clear(): po zlyhaní nečítame nič.
-            Volatile.Write(ref _snapshot, Empty);
+            // Nová instancia, nie zdieľaná statická konstanta: na neelevovanom stroji
+            // zlyhá každý Refresh(), a zdieľaná instancia by znamenala, že dva refreshy
+            // za sebou vrátia to isté — čo je presne to, čo test zo Step 1 zakazuje.
+            Volatile.Write(
+                ref _snapshot,
+                new Snapshot(new Dictionary<string, float>(), Array.Empty<SensorDescriptor>()));
         }
     }
 
@@ -177,7 +182,7 @@ V `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs` nahraď dve mutovateľné po
 
 `_faultReported` zostáva obyčajným polom: dotýka sa ho výhradne `Refresh()`, teda len poll task.
 
-Chybová cesta vracia `Empty`, nie novú prázdnu instanciu, takže dva zlyhané refreshy za sebou vrátia tú istú instanciu — test zo Step 1 to nekontroluje, keďže na stroji bez elevácie prvý `Refresh()` zlyhá. Ak test padne z tohto dôvodu, nahraď `Empty` v `catch` vetve za `new Snapshot(new(), Array.Empty<SensorDescriptor>())`; správnosť sa tým nemení a `Empty` je len úspora alokácie.
+**Nezdieľaj prázdny snapshot cez statickú konstantu.** Na stroji bez elevácie zlyhá WMI dotaz pri každom `Refresh()`, takže chybová cesta je tam tá bežná — a zdieľaná instancia by znamenala, že dva refreshy za sebou vrátia ten istý objekt. Test zo Step 1 by padol aj nad správnou implementáciou.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -344,21 +349,28 @@ Po Task 7 volá `Refresh()` poll task a `Read()` UI vlákno. Súťažia o `_star
 
 - [ ] **Step 1: Write the failing test**
 
-Najprv pridaj hook do `AnalogHwMonitor.Tests/Fakes/FakeAudioLoopbackCapture.cs`:
+Najprv pridaj dva hooky do `AnalogHwMonitor.Tests/Fakes/FakeAudioLoopbackCapture.cs`:
 
 ```csharp
     /// <summary>
-    /// Keď je nastavený, TryStart naň počká. Dovolí testu držať životný cyklus
-    /// otvorený a z iného vlákna dokázať, že capture vlákno naň nečaká.
+    /// Keď je nastavený, TryStart naň počká — na samom konci, keď je handler už
+    /// zaregistrovaný a Format nastavený. Dovolí testu držať životný cyklus otvorený a
+    /// z iného vlákna dokázať, že capture vlákno naň nečaká.
     /// </summary>
     public ManualResetEventSlim? BlockInTryStart { get; set; }
+
+    /// <summary>Nastaví sa tesne pred čakaním, aby test vedel, že sme naozaj vnútri.</summary>
+    public ManualResetEventSlim? EnteredTryStart { get; set; }
 ```
 
-a na začiatok `TryStart` (za `StartCount++;`):
+a **na konec** `TryStart`, za `error = null;` a **pred** `return true;`:
 
 ```csharp
+        EnteredTryStart?.Set();
         BlockInTryStart?.Wait();
 ```
+
+Poradie je celý zmysel toho hooku. Keby čakanie bolo na začiatku `TryStart`, `_onSamples` by bol ešte `null`, `Deliver()` by bol no-op a test by prešiel aj vtedy, keby `OnSamples` lock bral — teda by nedokazoval nič.
 
 Potom do `AnalogHwMonitor.Tests/AudioLevelSensorLifecycleTests.cs` pridaj:
 
@@ -375,19 +387,28 @@ Potom do `AnalogHwMonitor.Tests/AudioLevelSensorLifecycleTests.cs` pridaj:
         var capture = new FakeAudioLoopbackCapture();
         var time = new FakeTimeProvider();
         using var gate = new ManualResetEventSlim(false);
+        using var entered = new ManualResetEventSlim(false);
         using var source = new AudioLevelSensorSource(capture, NullLog.Instance, () => false, time);
 
-        // Nech je capture už rozbehnutý a handler zaregistrovaný, aby mal Deliver() čo volať.
+        // Prvý start prejde bez blokovania; až ten druhý uvízne.
         source.Read(AudioSensorIds.Left);
 
-        // Druhý start, ktorý uvízne vnútri TryStart() a drží lock.
         capture.CurrentDefaultDeviceId = "device-2";
-        source.Refresh();                       // všimne si zmenu zariadenia a zastaví
+        source.Refresh();                       // všimne si zmenu zariadenia a zastaví capture
+
+        capture.EnteredTryStart = entered;
         capture.BlockInTryStart = gate;
 
         var blocked = Task.Run(() => source.Read(AudioSensorIds.Left));
 
-        // Doručenie buffra z „capture vlákna", kým je životný cyklus zamknutý.
+        // Bez tohto čakania by test mohol doručiť buffer skôr, než Read() vôbec lock
+        // vezme, a prešiel by aj nad implementáciou, ktorá OnSamples zamyká.
+        Assert.True(
+            entered.Wait(TimeSpan.FromSeconds(5)),
+            "the second start never reached TryStart");
+
+        // Handler je teraz zaregistrovaný a životný cyklus zamknutý. Buffer z
+        // „capture vlákna" musí prejsť.
         var delivered = Task.Run(() => capture.Deliver(new float[256]));
 
         Assert.True(
@@ -395,7 +416,7 @@ Potom do `AnalogHwMonitor.Tests/AudioLevelSensorLifecycleTests.cs` pridaj:
             "OnSamples waited on the lifecycle lock; the capture thread must never block on it.");
 
         gate.Set();
-        Assert.True(blocked.Wait(TimeSpan.FromSeconds(2)));
+        Assert.True(blocked.Wait(TimeSpan.FromSeconds(5)));
     }
 ```
 
@@ -577,6 +598,9 @@ Najprv pridaj hook do `AnalogHwMonitor.Tests/Fakes/FakeSerialPort.cs`, do `Write
 ```csharp
     /// <summary>Keď je nastavený, Write naň počká — zaseknutý port, ktorý drží zámok.</summary>
     public ManualResetEventSlim? BlockInWrite { get; set; }
+
+    /// <summary>Nastaví sa tesne pred čakaním, aby test vedel, že zámok je naozaj držaný.</summary>
+    public ManualResetEventSlim? EnteredWrite { get; set; }
 ```
 
 ```csharp
@@ -588,6 +612,7 @@ Najprv pridaj hook do `AnalogHwMonitor.Tests/Fakes/FakeSerialPort.cs`, do `Write
             throw ThrowOnWrite;
         }
 
+        EnteredWrite?.Set();
         BlockInWrite?.Wait();
         Written.Add(text);
     }
@@ -606,6 +631,7 @@ Potom do `AnalogHwMonitor.Tests/SerialMeterLinkTests.cs`:
     {
         var port = new FakeSerialPort(FrameCodec.Banner);
         using var gate = new ManualResetEventSlim(false);
+        using var entered = new ManualResetEventSlim(false);
         var factory = new FakeSerialPortFactory();
         factory.AddPort("COM7", () => port);
         using var link = new SerialMeterLink(factory, "COM7", NullLog.Instance);
@@ -614,8 +640,13 @@ Potom do `AnalogHwMonitor.Tests/SerialMeterLinkTests.cs`:
         link.Send("V:0,0,0,0,0\n");
         Assert.True(link.IsConnected);
 
+        port.EnteredWrite = entered;
         port.BlockInWrite = gate;
         var writing = Task.Run(() => link.Send("V:1,1,1,1,1\n"));
+
+        // Bez tohto čakania by probe mohol prebehnúť skôr, než Send() zámok vôbec vezme,
+        // a test by prešiel aj nad implementáciou, ktorá IsConnected zamyká.
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)), "the write never started");
 
         var probe = Task.Run(() => link.IsConnected);
 
@@ -624,7 +655,7 @@ Potom do `AnalogHwMonitor.Tests/SerialMeterLinkTests.cs`:
             "IsConnected blocked on the port lock; the UI tick reads it every tick.");
 
         gate.Set();
-        Assert.True(writing.Wait(TimeSpan.FromSeconds(2)));
+        Assert.True(writing.Wait(TimeSpan.FromSeconds(5)));
     }
 ```
 
@@ -996,18 +1027,27 @@ public class QueuedMeterLinkTests
         }
     }
 
-    /// <summary>Prvý zápis uvízne, kým ho test nepustí — zaseknutý port.</summary>
+    /// <summary>
+    /// Prvý zápis uvízne, kým ho test nepustí — zaseknutý port. Oba príchody
+    /// signalizuje cez TaskCompletionSource, takže test nikdy nečítá _frames, kým doň
+    /// pumpa ešte môže zapisovať.
+    /// </summary>
     private sealed class BlockingMeterLink : IMeterLink
     {
         private readonly ManualResetEventSlim _gate;
         private readonly TaskCompletionSource _firstArrived = new();
+        private readonly TaskCompletionSource _secondArrived = new();
+        private readonly List<string> _frames = new();
         private bool _blocked;
 
         public BlockingMeterLink(ManualResetEventSlim gate) => _gate = gate;
 
-        public List<string> Frames { get; } = new();
-
         public Task FirstArrived => _firstArrived.Task;
+
+        public Task SecondArrived => _secondArrived.Task;
+
+        /// <summary>Zapisuje výhradne pumpa. Čítaj až po dobehnutí jej tasku.</summary>
+        public IReadOnlyList<string> Frames => _frames;
 
         public bool IsConnected => true;
 
@@ -1015,14 +1055,17 @@ public class QueuedMeterLinkTests
 
         public void Send(string frame)
         {
-            Frames.Add(frame);
+            _frames.Add(frame);
 
             if (!_blocked)
             {
                 _blocked = true;
                 _firstArrived.TrySetResult();
                 _gate.Wait();
+                return;
             }
+
+            _secondArrived.TrySetResult();
         }
 
         public void Dispose()
@@ -1069,16 +1112,12 @@ public class QueuedMeterLinkTests
         link.Send("frame-4");
 
         gate.Set();
-
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (inner.Frames.Count < 2 && DateTime.UtcNow < deadline)
-        {
-            await Task.Delay(10);
-        }
+        await inner.SecondArrived.WaitAsync(TimeSpan.FromSeconds(5));
 
         cts.Cancel();
         await pump.WaitAsync(TimeSpan.FromSeconds(5));
 
+        // Až tu — pumpa dobehla, takže _frames už nikto nemutuje.
         Assert.Equal(new[] { "frame-1", "frame-4" }, inner.Frames);
     }
 
