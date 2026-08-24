@@ -86,6 +86,45 @@ public class VuIntegratorTests
         Assert.Equal(0.01, integrator.Level, precision: 3);
     }
 
+    /// <summary>
+    /// An exponential decay never reaches zero, so a long silence would otherwise drive the
+    /// filter state down without limit — a probe build measured it past -1000 dB after a few
+    /// seconds of quiet. Add() then keeps computing with that state per sample on the WASAPI
+    /// capture thread, and far enough down that means denormal arithmetic on the one thread
+    /// that must never be slow.
+    /// </summary>
+    [Fact]
+    public void Decay_SnapsToZeroOnceTheLevelIsFarBelowAnythingReportable()
+    {
+        var integrator = new VuIntegrator();
+        integrator.Add(Constant(1.0, 1.0f, 1), offset: 0, stride: 1, SampleRate);
+
+        integrator.Decay(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(0.0, integrator.Level);
+    }
+
+    /// <summary>
+    /// The floor must sit far enough below the reported range to be invisible. -100 dBFS,
+    /// the floor the audio source reports, is a level near 6.4e-6 — four orders of magnitude
+    /// above where this snaps — so a needle at the bottom of its travel must still be
+    /// carrying a real value, not a snapped zero.
+    /// </summary>
+    [Fact]
+    public void Decay_LeavesALevelThatIsStillReportableAlone()
+    {
+        var integrator = new VuIntegrator();
+        integrator.Add(Constant(1.0, 1.0f, 1), offset: 0, stride: 1, SampleRate);
+
+        // 700 ms lands near 1e-5, just above the -100 dBFS the source reports as its floor.
+        integrator.Decay(TimeSpan.FromMilliseconds(700));
+
+        Assert.True(
+            integrator.Level > VuIntegrator.SilenceFloor,
+            $"a still-reportable level was snapped to zero: {integrator.Level}");
+        Assert.NotEqual(0.0, integrator.Level);
+    }
+
     [Fact]
     public void Decay_IgnoresZeroAndNegativeElapsedTime()
     {

@@ -28,6 +28,20 @@ public sealed class VuIntegrator
     /// <summary>Filter time constant. 99 % of a step within 300 ms.</summary>
     public static readonly double TimeConstantSeconds = 0.300 / Math.Log(100.0);
 
+    /// <summary>
+    /// Below this the level is snapped to zero instead of decaying further. An exponential
+    /// decay never reaches zero, so without a floor a long silence drives the filter state
+    /// down without limit — measured at about -140 dB per second, so a minute of quiet takes
+    /// it past 1e-300 and into denormal doubles, where arithmetic carries a penalty. That
+    /// matters here only because <see cref="Add"/> runs per sample on the WASAPI capture
+    /// thread, which is the one thread that must never be slow.
+    ///
+    /// 1e-9 is safe by a wide margin rather than by a hair: the reported floor,
+    /// <c>AudioSensorIds.FloorDbfs</c> at -100 dBFS, corresponds to a level near 6.4e-6, so
+    /// this sits about 76 dB below anything a needle or a text box can show.
+    /// </summary>
+    public const double SilenceFloor = 1e-9;
+
     private double _level;
 
     /// <summary>Rectified, filtered amplitude. 0..1 for input samples within -1..1.</summary>
@@ -78,6 +92,8 @@ public sealed class VuIntegrator
         }
 
         var level = Volatile.Read(ref _level);
-        Volatile.Write(ref _level, level * Math.Exp(-elapsed.TotalSeconds / TimeConstantSeconds));
+        var decayed = level * Math.Exp(-elapsed.TotalSeconds / TimeConstantSeconds);
+
+        Volatile.Write(ref _level, decayed < SilenceFloor ? 0.0 : decayed);
     }
 }
