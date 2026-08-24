@@ -53,11 +53,11 @@ public class AcpiThermalSensorSourceTests
     }
 
     /// <summary>
-    /// Refresh() beží po novom na poll tasku, kým UI vlákno čítá. Vyprázdniť a znova
-    /// naplniť tú istú kolekciu je vtedy nedefinované chovanie, takže každý Refresh()
-    /// musí publikovať novú instanciu a tú starú nechať na pokoji. Test nepotrebuje
-    /// elevated session ani jednu thermal zone: identita instancie je pozorovateľná
-    /// aj vtedy, keď je zoznam prázdny.
+    /// Refresh() now runs on the poll task while the UI thread reads. Emptying and
+    /// refilling the same collection is then undefined behaviour, so every Refresh()
+    /// must publish a new instance and leave the old one alone. The test needs neither
+    /// an elevated session nor a single thermal zone: instance identity is observable
+    /// even when the list is empty.
     /// </summary>
     [Fact]
     public void Refresh_PublishesANewListRatherThanEmptyingTheOldOne()

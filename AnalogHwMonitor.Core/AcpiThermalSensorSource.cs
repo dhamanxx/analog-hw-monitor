@@ -13,10 +13,10 @@ public sealed class AcpiThermalSensorSource : ISensorSource
     public const string IdPrefix = "/acpi/thermalzone/";
 
     /// <summary>
-    /// Hodnoty a deskriptory z jedného Refresh(). Jeden objekt a nie dve polia zámerne:
-    /// pri dvoch samostatných zápisoch by čitateľ mohol vidieť nové deskriptory so
-    /// starými hodnotami. Publikovaná instancia sa už nikdy nemutuje, takže ju smie
-    /// čítať UI vlákno, kým poll task stavia ďalšiu.
+    /// The values and descriptors from one Refresh(). One object rather than two fields
+    /// on purpose: with two separate writes a reader could see the new descriptors beside
+    /// the old values. A published instance is never mutated again, so the UI thread may
+    /// read it while the poll task builds the next one.
     /// </summary>
     private sealed record Snapshot(
         Dictionary<string, float> Values,
@@ -24,6 +24,9 @@ public sealed class AcpiThermalSensorSource : ISensorSource
 
     private readonly IAppLog _log;
 
+    // Array.Empty() returns a cached singleton, which is fine here — this initial value
+    // is never compared for identity against a refresh from the catch path. The catch
+    // path must allocate fresh to keep each failed refresh distinct.
     private Snapshot _snapshot =
         new(new Dictionary<string, float>(), Array.Empty<SensorDescriptor>());
 
@@ -80,10 +83,10 @@ public sealed class AcpiThermalSensorSource : ISensorSource
                 _faultReported = true;
             }
 
-            // Rovnaká semantika ako pôvodné Clear(): po zlyhaní nečítame nič.
-            // Nová instancia, nie zdieľaná statická konstanta: na neelevovanom stroji
-            // zlyhá každý Refresh(), a zdieľaná instancia by znamenala, že dva refreshy
-            // za sebou vrátia to isté — čo je presne to, čo test zo Step 1 zakazuje.
+            // Same semantics as the Clear() this replaced: after a failure nothing reads.
+            // A new List rather than Array.Empty<SensorDescriptor>(), which is a cached
+            // singleton — two failed refreshes would hand back the same instance, and on a
+            // machine without elevation this path is the common one, not the rare one.
             Volatile.Write(
                 ref _snapshot,
                 new Snapshot(new Dictionary<string, float>(), new List<SensorDescriptor>()));
