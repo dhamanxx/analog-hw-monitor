@@ -42,8 +42,8 @@ Preto sa obe slučky štartujú výhradne cez `Task.Run(...)`, ktorý ich posad�
 | `Core/ThrottledSensorSource.cs` | **zmazaný** |
 | `App/TrayApplicationContext.cs` | vlastní `CancellationTokenSource` a oba tasky |
 | `App/Program.cs` | drôtovanie |
-| `Tests/Fakes/FakeAudioLoopbackCapture.cs` | pridaný blokovací hook pre test locku |
-| `Tests/Fakes/FakeSerialPort.cs` | pridaný blokovací hook pre test locku |
+
+Testové fakes (`FakeSensorSource`, `FakeMeterLink`, `FakeSerialPort`, `FakeAudioLoopbackCapture`, `FakeTimeProvider`, `ThrowingSensorSource`, `RecordingLog`) sa **nemenia**. Tasky 3 a 4 zámerne nepridávajú testy ani hooky — dôvod je v ich vlastných sekciách.
 
 ---
 
@@ -337,96 +337,23 @@ git commit -m "perf: read LibreHardwareMonitor from a snapshot instead of walkin
 
 **Files:**
 - Modify: `AnalogHwMonitor.Core/AudioLevelSensorSource.cs`
-- Modify: `AnalogHwMonitor.Tests/Fakes/FakeAudioLoopbackCapture.cs`
-- Test: `AnalogHwMonitor.Tests/AudioLevelSensorLifecycleTests.cs`
+- Test: `AnalogHwMonitor.Tests/AudioLevelSensorLifecycleTests.cs` (bez zmeny — slúži ako regresná sieť)
 
 **Interfaces:**
 - Consumes: nič.
 - Produces: nezmenená signatúra `ISensorSource` a konstruktor `AudioLevelSensorSource(IAudioLoopbackCapture capture, IAppLog log, Func<bool>? compensateVolume = null, TimeProvider? time = null)`. Konstanty `IdleTimeout`, `SilenceGap`, `MaxCompensationDb`, `StartRetryInterval` zostávajú.
-- Produces pre testy: `FakeAudioLoopbackCapture.BlockInTryStart` typu `ManualResetEventSlim?` — keď je nastavený, `TryStart` naň počká, než uspeje.
 
 Po Task 7 volá `Refresh()` poll task a `Read()` UI vlákno. Súťažia o `_started`, `_reportedError`, `_lastFailedStart`, `_lastRead`, o `_capture` aj o reset integrátorov. Najhorší prípad: poll task sa rozhodne pre `Stop()` (slúchadlá von) presne vtedy, keď je UI vlákno vnútri `TryStart()` — výsledkom je `_started == true` nad zastaveným captureom a obe ručičky ležia mŕtve.
 
-- [ ] **Step 1: Write the failing test**
+**Tento task nepridáva žiadny test, a je to vedomé rozhodnutie.** Lock sa nedá pripnúť testom, ktorý pred jeho pridaním padá — neexistencia locku sa nedá odmerať. Ochranou proti regresii je existujúci `AudioLevelSensorLifecycleTests` (12 testov, ktoré prechádzajú `Refresh()`/`Read()` v sekvencii) a `AudioLevelSensorSourceTests`. Obe musia po zmene prejsť nezmenené. **Nepridávaj `BlockInTryStart` ani podobné hooky do `FakeAudioLoopbackCapture`** — bola to zvažovaná a zamietnutá možnosť.
 
-Najprv pridaj dva hooky do `AnalogHwMonitor.Tests/Fakes/FakeAudioLoopbackCapture.cs`:
+- [ ] **Step 1: Establish the baseline**
 
-```csharp
-    /// <summary>
-    /// Keď je nastavený, TryStart naň počká — na samom konci, keď je handler už
-    /// zaregistrovaný a Format nastavený. Dovolí testu držať životný cyklus otvorený a
-    /// z iného vlákna dokázať, že capture vlákno naň nečaká.
-    /// </summary>
-    public ManualResetEventSlim? BlockInTryStart { get; set; }
+Run: `dotnet test AnalogHwMonitor.sln --filter "FullyQualifiedName~AudioLevelSensor"`
 
-    /// <summary>Nastaví sa tesne pred čakaním, aby test vedel, že sme naozaj vnútri.</summary>
-    public ManualResetEventSlim? EnteredTryStart { get; set; }
-```
+Expected: PASS. Zapíš si počet testov — po Step 3 musí byť rovnaký a všetky musia prejsť.
 
-a **na konec** `TryStart`, za `error = null;` a **pred** `return true;`:
-
-```csharp
-        EnteredTryStart?.Set();
-        BlockInTryStart?.Wait();
-```
-
-Poradie je celý zmysel toho hooku. Keby čakanie bolo na začiatku `TryStart`, `_onSamples` by bol ešte `null`, `Deliver()` by bol no-op a test by prešiel aj vtedy, keby `OnSamples` lock bral — teda by nedokazoval nič.
-
-Potom do `AnalogHwMonitor.Tests/AudioLevelSensorLifecycleTests.cs` pridaj:
-
-```csharp
-    /// <summary>
-    /// OnSamples beží na WASAPI capture vlákne v rytme buffrov a nesmie nikdy čakať na
-    /// UI vlákno. Test drží životný cyklus otvorený vnútri TryStart() na jednom vlákne
-    /// a z druhého doručí buffer: ten musí prejsť. Keby OnSamples bral ten istý lock,
-    /// audio vlákno by sa zablokovalo na dobu, ktorú WASAPI netoleruje.
-    /// </summary>
-    [Fact]
-    public void DeliveringSamplesDoesNotWaitForTheLifecycleLock()
-    {
-        var capture = new FakeAudioLoopbackCapture();
-        var time = new FakeTimeProvider();
-        using var gate = new ManualResetEventSlim(false);
-        using var entered = new ManualResetEventSlim(false);
-        using var source = new AudioLevelSensorSource(capture, NullLog.Instance, () => false, time);
-
-        // Prvý start prejde bez blokovania; až ten druhý uvízne.
-        source.Read(AudioSensorIds.Left);
-
-        capture.CurrentDefaultDeviceId = "device-2";
-        source.Refresh();                       // všimne si zmenu zariadenia a zastaví capture
-
-        capture.EnteredTryStart = entered;
-        capture.BlockInTryStart = gate;
-
-        var blocked = Task.Run(() => source.Read(AudioSensorIds.Left));
-
-        // Bez tohto čakania by test mohol doručiť buffer skôr, než Read() vôbec lock
-        // vezme, a prešiel by aj nad implementáciou, ktorá OnSamples zamyká.
-        Assert.True(
-            entered.Wait(TimeSpan.FromSeconds(5)),
-            "the second start never reached TryStart");
-
-        // Handler je teraz zaregistrovaný a životný cyklus zamknutý. Buffer z
-        // „capture vlákna" musí prejsť.
-        var delivered = Task.Run(() => capture.Deliver(new float[256]));
-
-        Assert.True(
-            delivered.Wait(TimeSpan.FromSeconds(2)),
-            "OnSamples waited on the lifecycle lock; the capture thread must never block on it.");
-
-        gate.Set();
-        Assert.True(blocked.Wait(TimeSpan.FromSeconds(5)));
-    }
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `dotnet test AnalogHwMonitor.sln --filter "FullyQualifiedName~AudioLevelSensorLifecycleTests.DeliveringSamplesDoesNotWaitForTheLifecycleLock"`
-
-Expected: PASS už teraz — dnes žiadny lock neexistuje, takže sa naň nedá čakať. Test je regresná pasca pre Step 3: po pridaní locku musí prejsť ďalej. Zaznamenaj, že prešiel, a pokračuj; ak po Step 3 padne, lock je na `OnSamples`, čo je chyba.
-
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 2: Write the implementation**
 
 V `AnalogHwMonitor.Core/AudioLevelSensorSource.cs` pridaj pole:
 
@@ -556,20 +483,20 @@ A obal `Dispose()`:
 
 `OnSamples` a `ApplySilenceDecay` nechaj presne ako sú.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 3: Run tests to verify nothing regressed**
 
 Run: `dotnet test AnalogHwMonitor.sln --filter "FullyQualifiedName~AudioLevelSensor"`
 
-Expected: PASS — všetkých 12 testov v `AudioLevelSensorLifecycleTests` plus `AudioLevelSensorSourceTests`. Zvlášť `ARoundOfStartsAndStopsLeavesNothingSubscribed` a `Refresh_RestartsWhenTheCaptureDiedUnderUs`: obe idú cez `Refresh()`/`Read()` v sekvencii, teda cez nový lock.
+Expected: PASS — rovnaký počet testov ako v Step 1, všetky zelené. Zvlášť `ARoundOfStartsAndStopsLeavesNothingSubscribed`, `Refresh_RestartsWhenTheCaptureDiedUnderUs` a `Refresh_RestartsOnTheNewDeviceWhenTheDefaultOutputChanges`: všetky tri idú cez `Refresh()`/`Read()` v sekvencii, teda cez nový lock.
 
 Run: `dotnet test AnalogHwMonitor.sln`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add AnalogHwMonitor.Core/AudioLevelSensorSource.cs AnalogHwMonitor.Tests/Fakes/FakeAudioLoopbackCapture.cs AnalogHwMonitor.Tests/AudioLevelSensorLifecycleTests.cs
+git add AnalogHwMonitor.Core/AudioLevelSensorSource.cs
 git commit -m "fix: serialise the audio capture lifecycle without touching the capture thread"
 ```
 
@@ -579,93 +506,25 @@ git commit -m "fix: serialise the audio capture lifecycle without touching the c
 
 **Files:**
 - Modify: `AnalogHwMonitor.Core/SerialMeterLink.cs`
-- Modify: `AnalogHwMonitor.Tests/Fakes/FakeSerialPort.cs`
-- Test: `AnalogHwMonitor.Tests/SerialMeterLinkTests.cs`
+- Test: `AnalogHwMonitor.Tests/SerialMeterLinkTests.cs` (bez zmeny — slúži ako regresná sieť)
 
 **Interfaces:**
 - Consumes: nič.
 - Produces: nezmenené `IMeterLink` (`bool IsConnected`, `string? LastError`, `void Send(string)`, `void Dispose()`), plus `string? PortName { get; set; }` a `bool TryConnect()`. Konstruktor zostáva `SerialMeterLink(ISerialPortFactory factory, string? portName, IAppLog log, TimeProvider? time = null)`. Konstanty `BannerReadAttempts` a `ReconnectInterval` zostávajú.
-- Produces pre testy: `FakeSerialPort.BlockInWrite` typu `ManualResetEventSlim?`.
 
 Po Task 8 beží `Send()` na sender tasku, kým `PortName` setter beží na UI vlákne (`SettingsForm.cs:398`, `_link.PortName = _monitor.Config.ComPort;`) a volá `Disconnect()` → `_port.Dispose()`. Disponovať port spod prebiehajúceho `Write()` je chyba.
 
-Zároveň platí obmedzenie zo spec rozhodnutia 7: **`IsConnected` sa nesmie čítať pod lockom.** Sender task ho drží počas `Write()`, čo je na zaseknutom porte sekundy, a UI si `IsConnected` číta každý tick pre tooltip — lock na getteri by vyrobil presne to tuhnutie UI, ktoré celý plán odstraňuje.
+Zároveň platí obmedzenie zo spec rozhodnutia 7: **`IsConnected` sa nesmie čítať pod lockom.** Sender task ho drží počas `Write()`, čo je na zaseknutom porte sekundy, a UI si `IsConnected` číta každý tick pre tooltip — lock na getteri by vyrobil presne to tuhnutie UI, ktoré celý plán odstraňuje. To je pri implementácii najdôležitejšia vec na tomto tasku.
 
-- [ ] **Step 1: Write the failing test**
+**Tento task nepridáva žiadny test, a je to vedomé rozhodnutie** — z rovnakého dôvodu ako Task 3. Ochranou je existujúci `SerialMeterLinkTests`, ktorý musí prejsť nezmenený. **Nepridávaj `BlockInWrite` ani podobné hooky do `FakeSerialPort`** — bola to zvažovaná a zamietnutá možnosť.
 
-Najprv pridaj hook do `AnalogHwMonitor.Tests/Fakes/FakeSerialPort.cs`, do `Write` hneď za kontrolu `ThrowOnWrite`:
+- [ ] **Step 1: Establish the baseline**
 
-```csharp
-    /// <summary>Keď je nastavený, Write naň počká — zaseknutý port, ktorý drží zámok.</summary>
-    public ManualResetEventSlim? BlockInWrite { get; set; }
+Run: `dotnet test AnalogHwMonitor.sln --filter "FullyQualifiedName~SerialMeterLinkTests"`
 
-    /// <summary>Nastaví sa tesne pred čakaním, aby test vedel, že zámok je naozaj držaný.</summary>
-    public ManualResetEventSlim? EnteredWrite { get; set; }
-```
+Expected: PASS. Zapíš si počet testov — po Step 3 musí byť rovnaký a všetky musia prejsť.
 
-```csharp
-    public void Write(string text)
-    {
-        if (ThrowOnWrite is not null)
-        {
-            IsOpen = false;
-            throw ThrowOnWrite;
-        }
-
-        EnteredWrite?.Set();
-        BlockInWrite?.Wait();
-        Written.Add(text);
-    }
-```
-
-Potom do `AnalogHwMonitor.Tests/SerialMeterLinkTests.cs`:
-
-```csharp
-    /// <summary>
-    /// Zaseknutý zápis drží zámok portu sekundy. IsConnected číta UI vlákno každý tick
-    /// pre tooltip, takže sa naň nesmie čakať — inak by presun zápisu na vlastný task
-    /// tuhnutie UI len presunul, nie odstránil.
-    /// </summary>
-    [Fact]
-    public void IsConnected_DoesNotWaitForAWriteInProgress()
-    {
-        var port = new FakeSerialPort(FrameCodec.Banner);
-        using var gate = new ManualResetEventSlim(false);
-        using var entered = new ManualResetEventSlim(false);
-        var factory = new FakeSerialPortFactory();
-        factory.AddPort("COM7", () => port);
-        using var link = new SerialMeterLink(factory, "COM7", NullLog.Instance);
-
-        // Prvý Send() sa spojí a zapíše; až druhý uvízne.
-        link.Send("V:0,0,0,0,0\n");
-        Assert.True(link.IsConnected);
-
-        port.EnteredWrite = entered;
-        port.BlockInWrite = gate;
-        var writing = Task.Run(() => link.Send("V:1,1,1,1,1\n"));
-
-        // Bez tohto čakania by probe mohol prebehnúť skôr, než Send() zámok vôbec vezme,
-        // a test by prešiel aj nad implementáciou, ktorá IsConnected zamyká.
-        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)), "the write never started");
-
-        var probe = Task.Run(() => link.IsConnected);
-
-        Assert.True(
-            probe.Wait(TimeSpan.FromSeconds(2)),
-            "IsConnected blocked on the port lock; the UI tick reads it every tick.");
-
-        gate.Set();
-        Assert.True(writing.Wait(TimeSpan.FromSeconds(5)));
-    }
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `dotnet test AnalogHwMonitor.sln --filter "FullyQualifiedName~SerialMeterLinkTests.IsConnected_DoesNotWaitForAWriteInProgress"`
-
-Expected: PASS už teraz — dnes lock neexistuje. Rovnako ako v Task 3 je to regresná pasca pre Step 3: musí prejsť aj po pridaní locku. Ak po Step 3 padne, `IsConnected` sa dostal pod lock.
-
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 2: Write the implementation**
 
 V `AnalogHwMonitor.Core/SerialMeterLink.cs`:
 
@@ -771,20 +630,20 @@ V `AnalogHwMonitor.Core/SerialMeterLink.cs`:
 
 Pozor: `Report()` vnútri `Send()` čítá `PortName`, ktorého getter lock neberie — v poriadku, `lock` je reentrantný aj keby bral. `Dispose()` obal do `lock (_gate) { Disconnect(); }`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 3: Run tests to verify nothing regressed**
 
 Run: `dotnet test AnalogHwMonitor.sln --filter "FullyQualifiedName~SerialMeterLinkTests"`
 
-Expected: PASS — celý existujúci súbor plus nový test. Zvlášť testy na reconnect interval a na latchovanie chýb: obe cesty sú teraz pod lockom.
+Expected: PASS — rovnaký počet testov ako v Step 1, všetky zelené. Zvlášť testy na reconnect interval a na latchovanie chýb: obe cesty sú teraz pod lockom.
 
 Run: `dotnet test AnalogHwMonitor.sln`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add AnalogHwMonitor.Core/SerialMeterLink.cs AnalogHwMonitor.Tests/Fakes/FakeSerialPort.cs AnalogHwMonitor.Tests/SerialMeterLinkTests.cs
+git add AnalogHwMonitor.Core/SerialMeterLink.cs
 git commit -m "fix: guard the serial port against a concurrent port change, keep IsConnected lock-free"
 ```
 
@@ -864,14 +723,10 @@ public class SensorRefreshLoopTests
         Assert.Single(log.Lines);
         Assert.Contains("refresh failed", log.Lines[0]);
     }
-
-    [Fact]
-    public void Interval_IsOneSecondRegardlessOfMode()
-    {
-        Assert.Equal(TimeSpan.FromSeconds(1), SensorRefreshLoop.Interval);
-    }
 }
 ```
+
+Netestuj hodnotu `SensorRefreshLoop.Interval`. `Assert.Equal(TimeSpan.FromSeconds(1), Interval)` len prepisuje konstantu a nič neoveruje; rozhodnutie „1 Hz v oboch režimoch" je zdokumentované v spec aj v doc komentári triedy.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1612,4 +1467,6 @@ git commit -m "docs: describe the three-thread model and the flat 1 Hz sensor re
 
 **Type consistency** — `SensorRefreshLoop(ISensorSource, IAppLog)`, `RefreshOnce()`, `RunAsync(CancellationToken)`, `Interval` sú rovnaké v Task 5, 7 aj 9. `QueuedMeterLink(IMeterLink)` a `RunAsync(CancellationToken)` rovnaké v Task 6 a 8. `TrayApplicationContext` má po Task 7 šesť parametrov a po Task 8 sedem, v oboch taskoch vymenované v poradí. `Snapshot(Dictionary<string, float>, IReadOnlyList<SensorDescriptor>)` je rovnaký record v Task 1 a 2, oba privátne vo svojej triede, teda bez kolízie.
 
-**Poznámka k Task 3 a 4 Step 2** — v oboch tých taskoch nový test **prechádza už pred implementáciou**, pretože pripína neprítomnosť locku na nesprávnom mieste, nie prítomnosť chovania. Nie je to TDD v obvyklom smere a je to zámerné: lock sa nedá otestovať tak, že by pred jeho pridaním test padal. Skutočným testom v týchto dvoch taskoch je, že **celá existujúca suite prejde ďalej** (Step 4) a že tieto dva testy neprestanú prechádzať.
+**Poznámka k Task 3 a 4** — ani jeden nepridáva test, čo je pri TDD pláne výnimka a preto je vysvetlená v oboch taskoch aj tu. Lock sa nedá pripnúť testom, ktorý pred jeho pridaním padá: neexistencia locku sa nedá odmerať. Zvažovaná bola alternatíva — testy s blokovacím hookom vo fake, ktoré by pripínali, že lock **nie je** na `OnSamples` a na `IsConnected` — a bola zamietnutá, pretože by prechádzali pred aj po implementácii. Ochranou v oboch taskoch je preto existujúca suite: `AudioLevelSensorLifecycleTests` a `AudioLevelSensorSourceTests` pre Task 3, `SerialMeterLinkTests` pre Task 4. Musia prejsť nezmenené, s rovnakým počtom testov ako pred zmenou.
+
+**Poznámka k testovaniu konstánt** — plán nikde netestuje hodnotu policy konstanty proti sebe samej. Zmazaný `ThrottledSensorSourceTests` to robil (`CurrentInterval_FollowsTheMode`), ale tam to malo zmysel: overoval **prepínanie** medzi dvoma intervalmi podľa režimu, čo je chovanie. `SensorRefreshLoop` má jeden interval a žiadne prepínanie, takže by z toho zostala tautológia.
