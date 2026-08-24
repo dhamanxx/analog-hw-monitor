@@ -30,6 +30,20 @@ public sealed class WasapiLoopbackAdapter : IAudioLoopbackCapture
     // very thread the join is waiting on.
     private readonly object _gate = new();
 
+    // The `_enumerator ??=` lazy init below, in CurrentDefaultDeviceId and in TryStart, is
+    // unsynchronised, and this branch made the field reachable from two threads:
+    // CurrentDefaultDeviceId now runs on the poll task (AudioLevelSensorSource.Refresh),
+    // while DeviceName and TryStart still run on the UI thread (Discover/Read). It stays
+    // safe in practice, but only through an argument that spans three files, so it is
+    // written down here rather than nowhere. AudioLevelSensorSource.Refresh only reaches
+    // _capture.CurrentDefaultDeviceId when _started is true; WasapiLoopbackAdapter.TryStart
+    // sets _deviceName before it can return true, so _started being true implies
+    // _deviceName is already non-null; and the DeviceName getter below returns that cached
+    // value before it ever reaches this lazy init. So whenever the poll thread can reach
+    // this field through CurrentDefaultDeviceId, the UI thread's DeviceName getter cannot
+    // reach it at the same time — it has already returned. No lock or thread-safe lazy
+    // wrapper added on the strength of that: it would be defending against a race that
+    // this argument says cannot happen, not one that is merely unlikely.
     private MMDeviceEnumerator? _enumerator;
     private MMDevice? _device;
     private NAudio.Wave.WasapiLoopbackCapture? _capture;

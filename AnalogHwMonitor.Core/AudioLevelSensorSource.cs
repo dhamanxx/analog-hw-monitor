@@ -26,9 +26,16 @@ public sealed class AudioLevelSensorSource : ISensorSource
     public static readonly TimeSpan SilenceGap = TimeSpan.FromMilliseconds(150);
 
     /// <summary>
-    /// Ceiling on volume compensation. At 5 % volume the correction is about +26 dB;
-    /// without a limit, a quiet machine's dither noise floor would be pulled up to full
-    /// scale and peg both needles.
+    /// Ceiling on volume compensation. Without a limit, a quiet machine's dither noise
+    /// floor would be pulled up to full scale and peg both needles.
+    ///
+    /// What gets compensated is <c>IAudioLoopbackCapture.VolumeDb</c>, which the adapter
+    /// reads from the endpoint's <c>MasterVolumeLevel</c> — the attenuation in decibels,
+    /// so negating it recovers the level exactly. Note that this is not the same as
+    /// 20·log10 of the volume slider's position: Windows maps the slider to decibels
+    /// through a taper that is device-dependent, so there is no fixed slider percentage
+    /// at which this ceiling starts to bite. A probe build on one machine read -6.07 dB
+    /// with the compensation mirroring it exactly and the ceiling never reached.
     /// </summary>
     public const double MaxCompensationDb = 40.0;
 
@@ -68,6 +75,24 @@ public sealed class AudioLevelSensorSource : ISensorSource
     private long _lastBufferTicks;
     private long _lastAdvanceTicks;
 
+    /// <summary>
+    /// Serialises the capture lifecycle. Refresh() runs on the poll task and Read() on the UI
+    /// thread, so without this a Stop() from the health check and a TryStart() from a read could
+    /// interleave and leave _started == true over a stopped capture — both needles dead until
+    /// something shakes them.
+    ///
+    /// OnSamples deliberately does NOT take this lock: doing so would deadlock the process, not
+    /// just add latency. WasapiLoopbackAdapter.StopLocked holds the adapter's own gate across
+    /// capture.Dispose(), which joins the capture thread — and Stop() is reached with
+    /// _lifecycle already held (Read()/Refresh() -> Stop() -> _capture.Stop() -> StopLocked).
+    /// If OnSamples, running on the capture thread, ever blocked on _lifecycle, the thread
+    /// StopLocked is joining would be waiting on a lock held by the very thread doing the
+    /// joining: a permanent freeze of the tray app, not a slow one. It communicates solely
+    /// through Volatile/Interlocked (_lastBufferTicks, _lastAdvanceTicks, VuIntegrator._level),
+    /// and that is enough.
+    /// </summary>
+    private readonly object _lifecycle = new();
+
     public AudioLevelSensorSource(
         IAudioLoopbackCapture capture,
         IAppLog log,
@@ -83,35 +108,38 @@ public sealed class AudioLevelSensorSource : ISensorSource
 
     /// <summary>
     /// Releases the device when nobody has asked for a level lately, and follows the
-    /// default output device when it changes. Both ride the tick loop's Refresh(), which
-    /// <see cref="ThrottledSensorSource"/> holds to once a second — the right rate for a
-    /// health check, and the reason neither needs a COM notification client.
+    /// default output device when it changes. Both ride the Refresh() that
+    /// <see cref="SensorRefreshLoop"/> drives once a second — the right rate for a health
+    /// check, and the reason neither needs a COM notification client.
     /// </summary>
     public void Refresh()
     {
-        if (!_started)
+        lock (_lifecycle)
         {
-            return;
-        }
+            if (!_started)
+            {
+                return;
+            }
 
-        if (_time.GetUtcNow() - _lastRead > IdleTimeout)
-        {
-            Stop();
-            return;
-        }
+            if (_time.GetUtcNow() - _lastRead > IdleTimeout)
+            {
+                Stop();
+                return;
+            }
 
-        // Headphones in, speakers out: the daily case, and the one a VU meter notices
-        // immediately because both needles go dead. But the same comparison also catches
-        // a capture that died under us — the adapter clears its device id on an
-        // unsolicited stop, so a mismatch here means either the default device moved or
-        // the capture is gone, and both want the same response. Narrowing this condition
-        // to require a non-null device id would silently delete the exclusive-mode
-        // recovery: it would pass every existing test and stop noticing the second case.
-        var current = _capture.CurrentDefaultDeviceId;
-        if (current is not null && current != _capture.DeviceId)
-        {
-            _log.Write($"The audio capture is no longer on the default device ({current}); restarting it.");
-            Stop();   // the next Read starts it again, on the new device
+            // Headphones in, speakers out: the daily case, and the one a VU meter notices
+            // immediately because both needles go dead. But the same comparison also catches
+            // a capture that died under us — the adapter clears its device id on an
+            // unsolicited stop, so a mismatch here means either the default device moved or
+            // the capture is gone, and both want the same response. Narrowing this condition
+            // to require a non-null device id would silently delete the exclusive-mode
+            // recovery: it would pass every existing test and stop noticing the second case.
+            var current = _capture.CurrentDefaultDeviceId;
+            if (current is not null && current != _capture.DeviceId)
+            {
+                _log.Write($"The audio capture is no longer on the default device ({current}); restarting it.");
+                Stop();   // the next Read starts it again, on the new device
+            }
         }
     }
 
@@ -136,53 +164,63 @@ public sealed class AudioLevelSensorSource : ISensorSource
         };
 
         // The composite asks every source for every identifier, so most calls here are
-        // about somebody else's sensor.
+        // about somebody else's sensor. This early return sits before the lock on purpose:
+        // of the five channels only two are audio, so three calls per tick never lock at all.
         if (channel < 0)
         {
             return null;
         }
 
-        _lastRead = _time.GetUtcNow();
-
-        if (!EnsureStarted())
+        lock (_lifecycle)
         {
-            return null;
+            _lastRead = _time.GetUtcNow();
+
+            if (!EnsureStarted())
+            {
+                return null;
+            }
+
+            if (_capture.IsMuted)
+            {
+                return (float)AudioSensorIds.FloorDbfs;
+            }
+
+            ApplySilenceDecay();
+
+            var level = _integrators[channel].Level * AverageToPeak;
+
+            // Returned before the compensation rather than clamped after it: the
+            // compensation would otherwise lift the floor by up to the ceiling, and
+            // digital silence would read -60 dBFS on a quiet system while the mute path
+            // above returned -100 for the same absence of signal.
+            if (level <= 0.0)
+            {
+                return (float)AudioSensorIds.FloorDbfs;
+            }
+
+            var dbfs = 20.0 * Math.Log10(level);
+
+            if (_compensateVolume())
+            {
+                dbfs += Math.Min(-_capture.VolumeDb, MaxCompensationDb);
+            }
+
+            return (float)Math.Max(dbfs, AudioSensorIds.FloorDbfs);
         }
-
-        if (_capture.IsMuted)
-        {
-            return (float)AudioSensorIds.FloorDbfs;
-        }
-
-        ApplySilenceDecay();
-
-        var level = _integrators[channel].Level * AverageToPeak;
-
-        // Returned before the compensation rather than clamped after it: the
-        // compensation would otherwise lift the floor by up to the ceiling, and
-        // digital silence would read -60 dBFS on a quiet system while the mute path
-        // above returned -100 for the same absence of signal.
-        if (level <= 0.0)
-        {
-            return (float)AudioSensorIds.FloorDbfs;
-        }
-
-        var dbfs = 20.0 * Math.Log10(level);
-
-        if (_compensateVolume())
-        {
-            dbfs += Math.Min(-_capture.VolumeDb, MaxCompensationDb);
-        }
-
-        return (float)Math.Max(dbfs, AudioSensorIds.FloorDbfs);
     }
 
     public void Dispose()
     {
-        Stop();
+        lock (_lifecycle)
+        {
+            Stop();
+        }
+
         _capture.Dispose();
     }
 
+    // Holds no lock of its own: called only from Refresh() and Read(), which already hold
+    // _lifecycle before reaching here.
     private bool EnsureStarted()
     {
         if (_started)
@@ -218,6 +256,8 @@ public sealed class AudioLevelSensorSource : ISensorSource
         return true;
     }
 
+    // Holds no lock of its own: called only from Refresh(), Read() and Dispose(), which
+    // already hold _lifecycle before reaching here.
     private void Stop()
     {
         if (!_started)

@@ -5,6 +5,11 @@ namespace AnalogHwMonitor.App;
 /// <summary>
 /// Owns the 1 Hz timer and the tray icon. The timer runs on the UI thread, so
 /// MonitorService and the settings window never need to marshal anything.
+///
+/// It also owns the lifetime of the <see cref="SensorRefreshLoop"/> and
+/// <see cref="QueuedMeterLink"/> tasks, the two pieces of this application deliberately
+/// kept off the UI thread — see the two Task.Run calls in the constructor and the
+/// shutdown ordering in Dispose.
 /// </summary>
 public sealed class TrayApplicationContext : ApplicationContext
 {
@@ -15,6 +20,9 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly IAppLog _log;
     private readonly NotifyIcon _icon;
     private readonly System.Windows.Forms.Timer _timer;
+    private readonly CancellationTokenSource _cts = new();
+    private readonly Task _pollTask;
+    private readonly Task _sendTask;
     private SettingsForm? _settings;
     private bool _tickFailureReported;
 
@@ -35,7 +43,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         SerialMeterLink link,
         ConfigStore store,
         ISensorSource sensors,
-        IAppLog log)
+        IAppLog log,
+        SensorRefreshLoop refreshLoop,
+        QueuedMeterLink sendLoop)
     {
         _monitor = monitor;
         _link = link;
@@ -71,6 +81,17 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
         _timer.Tick += (_, _) => OnTick();
         _timer.Start();
+
+        // Task.Run rather than a direct call: the constructor runs on the UI thread,
+        // where the WinForms SynchronizationContext is installed, and it would marshal
+        // the continuation after the first await back onto it — Refresh() would keep
+        // running on the UI thread and the whole change would be a no-op that only a
+        // profiler could catch.
+        _pollTask = Task.Run(() => refreshLoop.RunAsync(_cts.Token));
+
+        // Same trap, same fix: Task.Run keeps the sender's blocking SerialPort.Write off
+        // the UI thread instead of just moving its continuations there.
+        _sendTask = Task.Run(() => sendLoop.RunAsync(_cts.Token));
 
         // Dispose writes "Stopped."; without this line a clean run leaves log.txt with
         // one entry and no way to tell when the session it ended actually began.
@@ -191,6 +212,59 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             _timer.Stop();
             _timer.Dispose();
+
+            _cts.Cancel();
+
+            // Cancellation does not interrupt a 99 ms Refresh() already in progress —
+            // a hung WMI query or GPU counter read is what actually consumes this cap —
+            // nor does it interrupt a SerialPort.Write already blocked on a wedged
+            // adapter, which the sender task can be, up to its own 1000 ms
+            // WriteTimeout. So the wait is capped rather than open-ended.
+            //
+            // The two things this cap can leave running are not the same hazard, and
+            // they must not be described as one:
+            //
+            // - The driver really is torn out. _computer.Close() is unguarded, so once
+            //   the cap expires it closes the ring0 driver underneath an in-flight
+            //   _computer.Accept(). Accepted: the process is exiting and nothing
+            //   observes the resulting exception.
+            //
+            // - The port is not torn out — it is waited on. SerialMeterLink.Dispose()
+            //   takes the same lock Send() holds for the whole Write(), so
+            //   QueuedMeterLink.Dispose() below blocks until that write finishes or
+            //   hits its own 1000 ms WriteTimeout, on top of the 2 s cap that already
+            //   expired. Worst case, on a reentrant TryConnect's five banner reads,
+            //   this can run to roughly 3.5 s. That is a hidden UI stall at Exit, not
+            //   data corruption — accepted for the same reason as the driver: the
+            //   alternative is an uncapped wait that hangs Exit on exactly the stuck
+            //   write that provoked it.
+            //
+            // A third term follows right after this block: _monitor.Dispose() below
+            // reaches AudioLevelSensorSource.Dispose() -> WasapiLoopbackAdapter.StopLocked
+            // -> _stopped.Wait(StopTimeout), and StopTimeout is 2 s of its own, run after
+            // whichever of the two waits above finished. So the worst case for the whole
+            // Dispose() is not the ~3.5 s the port wait tops out at above — it is that
+            // ~3.5 s plus this 2 s, i.e. about 5-6 s, and other slop in the two hazards
+            // above (retries, a slow driver close) can push it toward the 5-7 s this
+            // method can plausibly take end to end. Still a hidden UI stall, not data
+            // corruption, and still accepted for the same reason as the other two terms.
+            try
+            {
+                Task.WaitAll(new[] { _pollTask, _sendTask }, TimeSpan.FromSeconds(2));
+            }
+            catch (AggregateException)
+            {
+                // Belt and braces, not a live path: SerialMeterLink.Send catches every
+                // exception around the write, and RefreshOnce does the same around the
+                // sensor read, so neither task can currently end up faulted through its
+                // own inner call. Kept anyway because an unhandled AggregateException
+                // here — on the UI thread, during Exit — would skip everything below:
+                // the tray icon would linger after the process died and log.txt would
+                // never get its "Stopped." line.
+            }
+
+            _cts.Dispose();
+
             _icon.Visible = false;
             _icon.Dispose();
             _monitor.Dispose();

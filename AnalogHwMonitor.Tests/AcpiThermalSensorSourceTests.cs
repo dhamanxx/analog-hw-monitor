@@ -51,4 +51,23 @@ public class AcpiThermalSensorSourceTests
 
         Assert.Null(source.Read(AcpiThermalSensorSource.IdPrefix + "NOPE"));
     }
+
+    /// <summary>
+    /// Refresh() now runs on the poll task while the UI thread reads. Emptying and
+    /// refilling the same collection is then undefined behaviour, so every Refresh()
+    /// must publish a new instance and leave the old one alone. The test needs neither
+    /// an elevated session nor a single thermal zone: instance identity is observable
+    /// even when the list is empty.
+    /// </summary>
+    [Fact]
+    public void Refresh_PublishesANewListRatherThanEmptyingTheOldOne()
+    {
+        using var source = new AcpiThermalSensorSource(NullLog.Instance);
+        source.Refresh();
+        var first = source.Discover();
+
+        source.Refresh();
+
+        Assert.NotSame(first, source.Discover());
+    }
 }

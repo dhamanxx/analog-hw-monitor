@@ -16,6 +16,16 @@ public sealed class CompositeSensorSource : ISensorSource
 
     private readonly IAppLog _log;
     private readonly ISensorSource[] _sources;
+
+    // The second index is why this class needs no lock, not only why its log latch does
+    // not alternate. Refresh() runs on the poll task and only ever touches [i, Refresh];
+    // Read() and Discover() run on the UI thread and only ever touch [i, Read] or
+    // [i, Discover]. So the poll task and the UI thread never read or write the same
+    // array element, and each element is itself only ever touched by one of the two
+    // threads — there is nothing left for a lock to protect. Collapsing this to a
+    // Dictionary<ISensorSource, string?> or a single string?[] would drop that property
+    // along with the alternating-log fix it was added for, and reintroduce a data race
+    // between the poll task and the UI thread.
     private readonly string?[,] _lastFault;
 
     public CompositeSensorSource(IAppLog log, params ISensorSource[] sources)

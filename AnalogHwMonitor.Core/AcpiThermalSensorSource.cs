@@ -12,9 +12,24 @@ public sealed class AcpiThermalSensorSource : ISensorSource
 {
     public const string IdPrefix = "/acpi/thermalzone/";
 
+    /// <summary>
+    /// The values and descriptors from one Refresh(). One object rather than two fields
+    /// on purpose: with two separate writes a reader could see the new descriptors beside
+    /// the old values. A published instance is never mutated again, so the UI thread may
+    /// read it while the poll task builds the next one.
+    /// </summary>
+    private sealed record Snapshot(
+        Dictionary<string, float> Values,
+        IReadOnlyList<SensorDescriptor> Descriptors);
+
     private readonly IAppLog _log;
-    private readonly Dictionary<string, float> _values = new();
-    private readonly List<SensorDescriptor> _descriptors = new();
+
+    // Array.Empty() returns a cached singleton, which is fine here — this initial value
+    // is never compared for identity against a refresh from the catch path. The catch
+    // path must allocate fresh to keep each failed refresh distinct.
+    private Snapshot _snapshot =
+        new(new Dictionary<string, float>(), Array.Empty<SensorDescriptor>());
+
     private bool _faultReported;
 
     public AcpiThermalSensorSource(IAppLog log) => _log = log;
@@ -27,8 +42,8 @@ public sealed class AcpiThermalSensorSource : ISensorSource
                 @"root\wmi",
                 "SELECT InstanceName, CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");
 
-            _values.Clear();
-            _descriptors.Clear();
+            var values = new Dictionary<string, float>();
+            var descriptors = new List<SensorDescriptor>();
 
             // The collection itself is a WMI/COM enumerator and must be disposed
             // alongside the objects it yields — Refresh runs once a second for the
@@ -51,12 +66,13 @@ public sealed class AcpiThermalSensorSource : ISensorSource
                     var name = ShortName(instance);
                     var id = IdPrefix + name;
 
-                    _values[id] = celsius;
-                    _descriptors.Add(new SensorDescriptor(
+                    values[id] = celsius;
+                    descriptors.Add(new SensorDescriptor(
                         id, name, "ACPI Thermal Zone", SensorKind.Temperature, "°C"));
                 }
             }
 
+            Volatile.Write(ref _snapshot, new Snapshot(values, descriptors));
             _faultReported = false;
         }
         catch (Exception ex)
@@ -67,15 +83,21 @@ public sealed class AcpiThermalSensorSource : ISensorSource
                 _faultReported = true;
             }
 
-            _values.Clear();
-            _descriptors.Clear();
+            // Same semantics as the Clear() this replaced: after a failure nothing reads.
+            // A new List rather than Array.Empty<SensorDescriptor>(), which is a cached
+            // singleton — two failed refreshes would hand back the same instance, and on a
+            // machine without elevation this path is the common one, not the rare one.
+            Volatile.Write(
+                ref _snapshot,
+                new Snapshot(new Dictionary<string, float>(), new List<SensorDescriptor>()));
         }
     }
 
-    public IReadOnlyList<SensorDescriptor> Discover() => _descriptors;
+    public IReadOnlyList<SensorDescriptor> Discover() =>
+        Volatile.Read(ref _snapshot).Descriptors;
 
     public float? Read(string sensorId) =>
-        _values.TryGetValue(sensorId, out var value) ? value : null;
+        Volatile.Read(ref _snapshot).Values.TryGetValue(sensorId, out var value) ? value : null;
 
     public void Dispose()
     {

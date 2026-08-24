@@ -62,4 +62,28 @@ public class LibreHardwareSensorSourceTests
 
         Assert.All(config.Channels, c => Assert.False(string.IsNullOrEmpty(c.SensorId)));
     }
+
+    /// <summary>
+    /// Discover() and Read() must read a snapshot built in Refresh(), not walk
+    /// the live tree — otherwise the tree walk goes back on the UI thread and Refresh()
+    /// on the poll task mutates it under their feet. The identity of the returned list
+    /// proves it: today it creates a new List on every call, after the change it is the
+    /// same object until the next Refresh().
+    /// </summary>
+    [SkippableFact]
+    public void Discover_ReturnsTheSameSnapshotUntilTheNextRefresh()
+    {
+        Skip.IfNot(Enabled);
+
+        using var source = new LibreHardwareSensorSource();
+        source.Refresh();
+
+        var first = source.Discover();
+
+        Assert.Same(first, source.Discover());
+
+        source.Refresh();
+
+        Assert.NotSame(first, source.Discover());
+    }
 }

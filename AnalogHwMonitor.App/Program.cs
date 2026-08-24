@@ -74,14 +74,14 @@ internal static class Program
         }
 
         // From here on the composite absorbs and latches every source fault, so a
-        // source that dies later costs its own readings and nothing else. The throttle
-        // sits outside it because the tick runs at 25 Hz in VU meter mode while the
-        // hardware behind LibreHardwareMonitor must be polled far more rarely — and it
-        // reads the mode from the same configuration object the tray menu writes, so the
-        // interval follows the tick rate without either side knowing about the other.
-        // See ThrottledSensorSource for what each of the two intervals costs and buys.
-        ISensorSource sensors = new ThrottledSensorSource(
-            new CompositeSensorSource(log, sources.ToArray()), () => config.VuMode);
+        // source that dies later costs its own readings and nothing else. Refresh() is
+        // no longer called by the tick — it is owned by SensorRefreshLoop on its own
+        // task once a second, in both modes. That is why there is no throttle here and
+        // why VuMode no longer affects the refresh interval.
+        ISensorSource sensors = new CompositeSensorSource(log, sources.ToArray());
+
+        // Load-bearing, not habit: AssignSensors below reads the snapshot that this very
+        // Refresh() builds. Without it, it would see an empty snapshot and map nothing.
         sensors.Refresh();
 
         var hadUnassignedChannels = config.Channels.Any(c => string.IsNullOrEmpty(c.SensorId));
@@ -102,8 +102,16 @@ internal static class Program
         }
 
         var link = new SerialMeterLink(new SerialPortFactory(), config.ComPort, log);
-        var monitor = new MonitorService(sensors, link, config, log);
 
-        Application.Run(new TrayApplicationContext(monitor, link, store, sensors, log));
+        // MonitorService writes into the queue, not to the port. Tick runs on the UI
+        // thread, and SerialPort.Write on a jammed adapter is a matter of seconds, not
+        // microseconds. The tray and SettingsForm keep holding SerialMeterLink: they
+        // need PortName and IsConnected, which have no business being on the queue.
+        var sendLoop = new QueuedMeterLink(link);
+        var monitor = new MonitorService(sensors, sendLoop, config, log);
+        var refreshLoop = new SensorRefreshLoop(sensors, log);
+
+        Application.Run(
+            new TrayApplicationContext(monitor, link, store, sensors, log, refreshLoop, sendLoop));
     }
 }
