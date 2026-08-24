@@ -221,25 +221,36 @@ public sealed class TrayApplicationContext : ApplicationContext
             // adapter, which the sender task can be, up to its own 1000 ms
             // WriteTimeout. So the wait is capped rather than open-ended.
             //
-            // What the cap permits, said plainly: when it expires, one or both tasks are
-            // still running, and _monitor.Dispose() below reaches both _computer.Close(),
-            // which unloads the ring0 driver underneath an in-flight _computer.Accept(),
-            // and QueuedMeterLink.Dispose(), which disposes the serial port underneath an
-            // in-flight Write(). Neither is prevented — both are accepted. The process is
-            // exiting, nothing observes the resulting exceptions, and waiting without a
-            // cap would hang Exit on exactly the stuck call that provoked it.
+            // The two things this cap can leave running are not the same hazard, and
+            // they must not be described as one:
+            //
+            // - The driver really is torn out. _computer.Close() is unguarded, so once
+            //   the cap expires it closes the ring0 driver underneath an in-flight
+            //   _computer.Accept(). Accepted: the process is exiting and nothing
+            //   observes the resulting exception.
+            //
+            // - The port is not torn out — it is waited on. SerialMeterLink.Dispose()
+            //   takes the same lock Send() holds for the whole Write(), so
+            //   QueuedMeterLink.Dispose() below blocks until that write finishes or
+            //   hits its own 1000 ms WriteTimeout, on top of the 2 s cap that already
+            //   expired. Worst case, on a reentrant TryConnect's five banner reads,
+            //   this can run to roughly 3.5 s. That is a hidden UI stall at Exit, not
+            //   data corruption — accepted for the same reason as the driver: the
+            //   alternative is an uncapped wait that hangs Exit on exactly the stuck
+            //   write that provoked it.
             try
             {
                 Task.WaitAll(new[] { _pollTask, _sendTask }, TimeSpan.FromSeconds(2));
             }
             catch (AggregateException)
             {
-                // A faulted task, not a timeout. The sender task ends faulted whenever
-                // the port is disposed under an in-flight write, and WaitAll rethrows
-                // that here — on the UI thread, during Exit. Unhandled it would skip
-                // everything below: the tray icon would linger after the process died
-                // and log.txt would never get its "Stopped." line. There is nothing to
-                // do about the fault itself; we are exiting.
+                // Belt and braces, not a live path: SerialMeterLink.Send catches every
+                // exception around the write, and RefreshOnce does the same around the
+                // sensor read, so neither task can currently end up faulted through its
+                // own inner call. Kept anyway because an unhandled AggregateException
+                // here — on the UI thread, during Exit — would skip everything below:
+                // the tray icon would linger after the process died and log.txt would
+                // never get its "Stopped." line.
             }
 
             _cts.Dispose();
