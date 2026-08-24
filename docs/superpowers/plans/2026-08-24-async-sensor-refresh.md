@@ -1232,10 +1232,16 @@ Prepíš `Dispose`:
 
             _cts.Cancel();
 
-            // Cancellation does not interrupt a blocking write already in flight, nor
-            // an in-progress 99 ms Refresh(), hence the cap here. On a jammed port that
-            // means up to two seconds of blocked UI thread on exit — better than
-            // ripping the port and driver out from under an operation in progress.
+            // Cancellation does not interrupt a 99 ms Refresh() already in progress —
+            // a hung WMI query or GPU counter read is what actually consumes this cap —
+            // so the wait is capped rather than open-ended.
+            //
+            // What the cap permits, said plainly: when it expires the poll task is still
+            // running, and _monitor.Dispose() below reaches _computer.Close(), which
+            // unloads the ring0 driver underneath an in-flight _computer.Accept(). That
+            // is accepted, not prevented. The process is exiting, nothing observes the
+            // resulting exception, and waiting without a cap would hang Exit on exactly
+            // the stuck refresh that provoked it.
             Task.WaitAll(new[] { _pollTask }, TimeSpan.FromSeconds(2));
             _cts.Dispose();
 
@@ -1356,7 +1362,19 @@ Do signatúry konstruktora pridaj `QueuedMeterLink sendLoop` ako posledný param
 V `Dispose` rozšír čakanie na oba tasky:
 
 ```csharp
-            Task.WaitAll(new[] { _pollTask, _sendTask }, TimeSpan.FromSeconds(2));
+            try
+            {
+                Task.WaitAll(new[] { _pollTask, _sendTask }, TimeSpan.FromSeconds(2));
+            }
+            catch (AggregateException)
+            {
+                // A faulted task, not a timeout. The sender task ends faulted whenever
+                // the port is disposed under an in-flight write, and WaitAll rethrows
+                // that here — on the UI thread, during Exit. Unhandled it would skip
+                // everything below: the tray icon would linger after the process died
+                // and log.txt would never get its "Stopped." line. There is nothing to
+                // do about the fault itself; we are exiting.
+            }
 ```
 
 `_monitor.Dispose()` zostáva až za tým čakaním — disponuje `QueuedMeterLink`, ktorý disponuje `SerialMeterLink`, a to sa nemá stať, kým sender task ešte môže zapisovať.
