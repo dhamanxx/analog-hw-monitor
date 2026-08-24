@@ -164,12 +164,13 @@ V `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs` nahraď dve mutovateľné po
             }
 
             // Rovnaká semantika ako pôvodné Clear(): po zlyhaní nečítame nič.
-            // Nová instancia, nie zdieľaná statická konstanta: na neelevovanom stroji
-            // zlyhá každý Refresh(), a zdieľaná instancia by znamenala, že dva refreshy
-            // za sebou vrátia to isté — čo je presne to, čo test zo Step 1 zakazuje.
+            // new List, NIE Array.Empty<SensorDescriptor>(): to je cachovaný singleton,
+            // takže dva zlyhané refreshy by vrátili tú istú instanciu — presne to, čo
+            // test zo Step 1 zakazuje. Na neelevovanom stroji je pritom táto cesta tá
+            // bežná, nie výnimočná.
             Volatile.Write(
                 ref _snapshot,
-                new Snapshot(new Dictionary<string, float>(), Array.Empty<SensorDescriptor>()));
+                new Snapshot(new Dictionary<string, float>(), new List<SensorDescriptor>()));
         }
     }
 
@@ -182,7 +183,7 @@ V `AnalogHwMonitor.Core/AcpiThermalSensorSource.cs` nahraď dve mutovateľné po
 
 `_faultReported` zostáva obyčajným polom: dotýka sa ho výhradne `Refresh()`, teda len poll task.
 
-**Nezdieľaj prázdny snapshot cez statickú konstantu.** Na stroji bez elevácie zlyhá WMI dotaz pri každom `Refresh()`, takže chybová cesta je tam tá bežná — a zdieľaná instancia by znamenala, že dva refreshy za sebou vrátia ten istý objekt. Test zo Step 1 by padol aj nad správnou implementáciou.
+**Nezdieľaj prázdny snapshot — ani cez statickú konstantu, ani cez `Array.Empty<T>()`.** Na stroji bez elevácie zlyhá WMI dotaz pri každom `Refresh()`, takže chybová cesta je tam tá bežná. `Array.Empty<T>()` vracia cachovaný singleton, takže dva zlyhané refreshy by vrátili ten istý objekt a test zo Step 1 by padol aj nad správnou implementáciou. V `catch` teda `new List<SensorDescriptor>()`. Pri inicializácii poľa `Array.Empty` neprekáža — tú hodnotu nikto s druhým refreshom neporovnáva.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
