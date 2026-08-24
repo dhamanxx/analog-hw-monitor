@@ -1369,14 +1369,23 @@ V `Dispose` rozšír čakanie na oba tasky:
             }
             catch (AggregateException)
             {
-                // A faulted task, not a timeout. The sender task ends faulted whenever
-                // the port is disposed under an in-flight write, and WaitAll rethrows
-                // that here — on the UI thread, during Exit. Unhandled it would skip
-                // everything below: the tray icon would linger after the process died
-                // and log.txt would never get its "Stopped." line. There is nothing to
-                // do about the fault itself; we are exiting.
+                // A faulted task, not a timeout. Belt and braces rather than a live
+                // path: SerialMeterLink.Send catches every exception and RefreshOnce
+                // does the same, so neither task can currently reach here. Kept because
+                // an unhandled AggregateException on the UI thread during Exit would
+                // skip everything below — the tray icon would linger after the process
+                // died and log.txt would never get its "Stopped." line.
             }
 ```
+
+**Čo ten komentár nad `Task.WaitAll` smie a nesmie tvrdiť.** Dva hazardy na timeout path si vyžadujú rôzne slová, pretože sú rôzne, a plán ich raz už zlúčil nesprávne:
+
+- **Driver: skutočne sa trhá.** `_computer.Close()` nie je ničím zamknutý, takže po vypršaní stropu sa ring0 driver odpojí pod prebiehajúcim `_computer.Accept()`. To je prijaté — proces sa ukončuje a výnimku nikto nepozrie.
+- **Port: netrhá sa, blokuje.** `SerialMeterLink.Dispose()` berie `lock (_gate)`, ten istý, ktorý `Send()` drží po celý `Write()`. `QueuedMeterLink.Dispose()` teda port **nedisponuje pod zápisom** — počká, kým zápis dobehne alebo vyprší jeho `WriteTimeout`. Dôsledok nie je poškodený port, ale **skrytý UI stall**: po vypršaní dvojsekundového stropu môže `Dispose` sedieť v tom zámku ďalšiu ~1 s, v krajnom prípade ~3,5 s pri reentrantnom `TryConnect` s banner readmi.
+
+Nepíš teda, že sa port disponuje pod zápisom — to sa stať nemôže. Napíš, že sa naň čaká, a koľko to stojí.
+
+**Dôsledok pre celkový čas Exitu, ktorý plán inde tvrdí príliš optimisticky:** 2 s strop plus až ~1 s (~3,5 s) v sériovom zámku plus až 2 s v audio `StopLocked` (`WasapiLoopbackAdapter.StopTimeout`) dáva v najhoršom prípade ~5–7 s, nie „do dvoch sekúnd". Iba pri vypínaní, ale manuálny checklist to má povedať správne.
 
 `_monitor.Dispose()` zostáva až za tým čakaním — disponuje `QueuedMeterLink`, ktorý disponuje `SerialMeterLink`, a to sa nemá stať, kým sender task ešte môže zapisovať.
 
