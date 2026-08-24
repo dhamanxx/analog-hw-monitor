@@ -12,9 +12,21 @@ public sealed class AcpiThermalSensorSource : ISensorSource
 {
     public const string IdPrefix = "/acpi/thermalzone/";
 
+    /// <summary>
+    /// Hodnoty a deskriptory z jedného Refresh(). Jeden objekt a nie dve polia zámerne:
+    /// pri dvoch samostatných zápisoch by čitateľ mohol vidieť nové deskriptory so
+    /// starými hodnotami. Publikovaná instancia sa už nikdy nemutuje, takže ju smie
+    /// čítať UI vlákno, kým poll task stavia ďalšiu.
+    /// </summary>
+    private sealed record Snapshot(
+        Dictionary<string, float> Values,
+        IReadOnlyList<SensorDescriptor> Descriptors);
+
     private readonly IAppLog _log;
-    private readonly Dictionary<string, float> _values = new();
-    private readonly List<SensorDescriptor> _descriptors = new();
+
+    private Snapshot _snapshot =
+        new(new Dictionary<string, float>(), Array.Empty<SensorDescriptor>());
+
     private bool _faultReported;
 
     public AcpiThermalSensorSource(IAppLog log) => _log = log;
@@ -27,8 +39,8 @@ public sealed class AcpiThermalSensorSource : ISensorSource
                 @"root\wmi",
                 "SELECT InstanceName, CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");
 
-            _values.Clear();
-            _descriptors.Clear();
+            var values = new Dictionary<string, float>();
+            var descriptors = new List<SensorDescriptor>();
 
             // The collection itself is a WMI/COM enumerator and must be disposed
             // alongside the objects it yields — Refresh runs once a second for the
@@ -51,12 +63,13 @@ public sealed class AcpiThermalSensorSource : ISensorSource
                     var name = ShortName(instance);
                     var id = IdPrefix + name;
 
-                    _values[id] = celsius;
-                    _descriptors.Add(new SensorDescriptor(
+                    values[id] = celsius;
+                    descriptors.Add(new SensorDescriptor(
                         id, name, "ACPI Thermal Zone", SensorKind.Temperature, "°C"));
                 }
             }
 
+            Volatile.Write(ref _snapshot, new Snapshot(values, descriptors));
             _faultReported = false;
         }
         catch (Exception ex)
@@ -67,15 +80,21 @@ public sealed class AcpiThermalSensorSource : ISensorSource
                 _faultReported = true;
             }
 
-            _values.Clear();
-            _descriptors.Clear();
+            // Rovnaká semantika ako pôvodné Clear(): po zlyhaní nečítame nič.
+            // Nová instancia, nie zdieľaná statická konstanta: na neelevovanom stroji
+            // zlyhá každý Refresh(), a zdieľaná instancia by znamenala, že dva refreshy
+            // za sebou vrátia to isté — čo je presne to, čo test zo Step 1 zakazuje.
+            Volatile.Write(
+                ref _snapshot,
+                new Snapshot(new Dictionary<string, float>(), new List<SensorDescriptor>()));
         }
     }
 
-    public IReadOnlyList<SensorDescriptor> Discover() => _descriptors;
+    public IReadOnlyList<SensorDescriptor> Discover() =>
+        Volatile.Read(ref _snapshot).Descriptors;
 
     public float? Read(string sensorId) =>
-        _values.TryGetValue(sensorId, out var value) ? value : null;
+        Volatile.Read(ref _snapshot).Values.TryGetValue(sensorId, out var value) ? value : null;
 
     public void Dispose()
     {

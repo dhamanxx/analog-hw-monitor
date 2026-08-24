@@ -51,4 +51,23 @@ public class AcpiThermalSensorSourceTests
 
         Assert.Null(source.Read(AcpiThermalSensorSource.IdPrefix + "NOPE"));
     }
+
+    /// <summary>
+    /// Refresh() beží po novom na poll tasku, kým UI vlákno čítá. Vyprázdniť a znova
+    /// naplniť tú istú kolekciu je vtedy nedefinované chovanie, takže každý Refresh()
+    /// musí publikovať novú instanciu a tú starú nechať na pokoji. Test nepotrebuje
+    /// elevated session ani jednu thermal zone: identita instancie je pozorovateľná
+    /// aj vtedy, keď je zoznam prázdny.
+    /// </summary>
+    [Fact]
+    public void Refresh_PublishesANewListRatherThanEmptyingTheOldOne()
+    {
+        using var source = new AcpiThermalSensorSource(NullLog.Instance);
+        source.Refresh();
+        var first = source.Discover();
+
+        source.Refresh();
+
+        Assert.NotSame(first, source.Discover());
+    }
 }
