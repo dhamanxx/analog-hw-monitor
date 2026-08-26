@@ -793,7 +793,47 @@ In `Discover()`, add a third descriptor:
                 AudioSensorIds.Needle, "Needle (compensated)", device, SensorKind.Audio, AudioSensorIds.NeedleUnit),
 ```
 
-In `Read`, insert this block at the very top of the method, before the existing `var channel = sensorId switch`:
+Extract the level-to-dBFS conversion so both the existing levels and the needle share it.
+Add this private method next to `ReadNeedle` below:
+
+```csharp
+    /// <summary>
+    /// Level to dBFS, shared by every audio identifier so the floor rule lives in one
+    /// place. Digital silence returns the floor *before* volume compensation rather than
+    /// after: the compensation would otherwise lift the floor by up to its ceiling, and
+    /// silence on a quiet system would read differently from silence on a muted one.
+    /// </summary>
+    private double LevelToDbfs(double level)
+    {
+        if (level <= 0.0)
+        {
+            return AudioSensorIds.FloorDbfs;
+        }
+
+        var dbfs = 20.0 * Math.Log10(level);
+
+        if (_compensateVolume())
+        {
+            dbfs += Math.Min(-_capture.VolumeDb, MaxCompensationDb);
+        }
+
+        return Math.Max(dbfs, AudioSensorIds.FloorDbfs);
+    }
+```
+
+In the existing `Read`, replace everything from `var level = _integrators[channel].Level * AverageToPeak;`
+down to the final `return (float)Math.Max(dbfs, AudioSensorIds.FloorDbfs);` — including the
+`if (level <= 0.0)` early return and its comment, which now lives on `LevelToDbfs` — with:
+
+```csharp
+            return (float)LevelToDbfs(_integrators[channel].Level * AverageToPeak);
+```
+
+This must not change what `Read` returns for any input. The existing
+`AudioLevelSensorSourceTests` are the guard; if any of them change behaviour, the
+extraction is wrong.
+
+Then insert this block at the very top of `Read`, before the existing `var channel = sensorId switch`:
 
 ```csharp
         if (sensorId == AudioSensorIds.Needle)
@@ -840,13 +880,7 @@ Add `ReadNeedle` immediately after `Read`:
             {
                 ApplySilenceDecay();
 
-                var level = _needleDetector.Level * AverageToPeak;
-                var dbfs = level <= 0.0 ? AudioSensorIds.FloorDbfs : 20.0 * Math.Log10(level);
-
-                if (_compensateVolume())
-                {
-                    dbfs += Math.Min(-_capture.VolumeDb, MaxCompensationDb);
-                }
+                var dbfs = LevelToDbfs(_needleDetector.Level * AverageToPeak);
 
                 percent = ChannelMapper.ToPercent(
                     dbfs, VuModeSwitch.DefaultMinDbfs, VuModeSwitch.DefaultMaxDbfs);
