@@ -47,8 +47,8 @@ public sealed class VuIntegrator
     /// Below this the level is snapped to zero instead of decaying further. An exponential
     /// decay never reaches zero, so without a floor a long silence drives the filter state
     /// down without limit — at roughly (20 / ln 10) / tau dB per second, which is about
-    /// -140 dB/s for the default 65 ms instance and, since this build also creates one
-    /// with a 15 ms tau, roughly four times that for it. Either way a minute of quiet
+    /// -140 dB/s for the 65 ms constant every instance in this build currently uses.
+    /// A shorter tau scales that up in proportion. Either way a minute of quiet
     /// takes the level past 1e-300 and into denormal doubles, where arithmetic carries a
     /// penalty. That matters here only because <see cref="Add"/> and
     /// <see cref="AddMono"/> run per sample on the WASAPI capture thread, which is the one

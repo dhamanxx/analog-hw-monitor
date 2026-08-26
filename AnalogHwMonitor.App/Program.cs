@@ -49,7 +49,9 @@ internal static class Program
         // its Min/Max as usual, channel 1 inside the audio source, because its sensor
         // already reports deflection and its Min/Max is the 0..100 pass-through.
         log.Write(
-            "THROWAWAY measurement build: needle compensator on channel 1. "
+            "THROWAWAY measurement build: needle compensator on channel 1, "
+            + $"detector tau {NeedleCompensator.DetectorTauMs:0.##} ms, target zeta "
+            + $"{NeedleCompensator.TargetZeta} / omegaN {NeedleCompensator.TargetOmegaN}. "
             + "config.throwaway.json is in use and config.json is not written.");
 
         VuModeSwitch.Set(config, true);

@@ -46,8 +46,27 @@ public sealed class NeedleCompensator
     /// <summary>Target bandwidth, rad/s. Chosen for jitter tolerance, not for speed.</summary>
     public const double TargetOmegaN = 13.4221;
 
-    /// <summary>Time constant of the detector that feeds this filter, milliseconds.</summary>
-    public const double DetectorTauMs = 15.0;
+    /// <summary>
+    /// Time constant of the detector that feeds this filter, milliseconds.
+    ///
+    /// CONTROL CONFIGURATION. Deliberately bound to <see cref="VuIntegrator.TimeConstantSeconds"/>
+    /// rather than set to a number of its own, so this detector and the uncompensated
+    /// meter's are the same filter by construction and the biquad is the only difference
+    /// between the two chains.
+    ///
+    /// The first run of this experiment used 15 ms, and that made the comparison
+    /// unattributable. The uncompensated chain averages in the amplitude domain and takes
+    /// the logarithm last; a 15 ms detector barely averages at all, so the logarithm lands
+    /// on the near-instantaneous envelope and the averaging happens downstream in the dB
+    /// domain instead. By Jensen's inequality that is a geometric rather than an arithmetic
+    /// mean, so the compensated meter reads systematically low on anything dynamic —
+    /// simulated at -2.6 % of scale on random 60 ms bursts, -6.2 % alternating -6/-26 dBFS,
+    /// -20.3 % alternating 0/-40 dBFS, and exactly 0 on a steady tone, which is why no test
+    /// noticed. At the value below the offset is zero in all four cases.
+    ///
+    /// Set this back to 15.0 to reproduce the first run.
+    /// </summary>
+    public static readonly double DetectorTauMs = VuIntegrator.TimeConstantSeconds * 1000.0;
 
     /// <summary>
     /// Shortest step the bilinear transform is evaluated at. Below this, k = 2/dt grows

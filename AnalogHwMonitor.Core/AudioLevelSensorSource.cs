@@ -67,24 +67,15 @@ public sealed class AudioLevelSensorSource : ISensorSource
     private readonly TimeProvider _time;
     private readonly VuIntegrator[] _integrators = { new(), new() };
 
-    // THROWAWAY MEASUREMENT BUILD. A third detector, deliberately much faster than the
-    // two above, because the averaging the standard asks for is done by the compensator
-    // rather than by this filter.
+    // THROWAWAY MEASUREMENT BUILD, CONTROL CONFIGURATION. A third detector, identical to
+    // the two above by construction — see NeedleCompensator.DetectorTauMs for why it is
+    // bound to their time constant rather than given one of its own. With this setting the
+    // compensated chain differs from the uncompensated one by the biquad and nothing else.
     //
-    // Known limitation of the experiment, and it is about SilenceGap rather than tau.
-    // When WASAPI stops delivering buffers altogether — digital silence, not quiet
-    // music — nothing decays for the whole of SilenceGap (150 ms), and then a single
-    // ApplySilenceDecay call collapses this filter in one step, because 150 ms is ten
-    // of its 15 ms time constants. The 65 ms integrators beside it absorb the same gap
-    // at 2.3 tau and barely notice it. So the compensated needle's release into digital
-    // silence measures the gap policy and not its ballistics, and a release measured
-    // that way must not be read as a result of this experiment.
-    //
-    // Music is unaffected: buffers keep arriving, ApplySilenceDecay never fires, and
-    // this detector tracks the samples properly — which is the case the experiment is
-    // actually about. Deliberately not fixed here: SilenceGap is shared with channel 0,
-    // which is the control and must not change, and a second gap policy is scope this
-    // throwaway does not need.
+    // The SilenceGap limitation that applied when this ran at 15 ms is gone with it: at
+    // the shared 65 ms constant this filter absorbs the 150 ms gap at 2.3 tau exactly as
+    // its neighbours do, so a release into digital silence is now a fair measurement
+    // rather than a measurement of the gap policy. Restoring 15 ms restores the caveat.
     private readonly VuIntegrator _needleDetector = new(NeedleCompensator.DetectorTauMs / 1000.0);
     private readonly NeedleCompensator _compensator = new();
     private long _lastNeedleTicks;
@@ -228,7 +219,8 @@ public sealed class AudioLevelSensorSource : ISensorSource
     }
 
     /// <summary>
-    /// THROWAWAY MEASUREMENT BUILD. The compensated chain: a 15 ms detector, the same
+    /// THROWAWAY MEASUREMENT BUILD. The compensated chain: a detector matching the
+    /// uncompensated meter's (see <see cref="NeedleCompensator.DetectorTauMs"/>), the same
     /// -40..0 dBFS window the uncompensated meter uses, and the inverse-plant biquad.
     ///
     /// The dB window is taken from <see cref="VuModeSwitch"/> rather than from the

@@ -97,8 +97,8 @@ public class AudioLevelSensorSourceTests
     /// settle at 80 %.
     ///
     /// The needle is a filter with memory, not a snapshot: the detector's own time
-    /// constant is <see cref="NeedleCompensator.DetectorTauMs"/> (15 ms, well inside one
-    /// 40 ms tick given a steady signal), but the compensator downstream of it is a
+    /// constant is <see cref="NeedleCompensator.DetectorTauMs"/>, but the compensator
+    /// downstream of it is a
     /// second-order filter whose own settling time is about 320 ms /
     /// 8 ticks (<c>NeedleCompensatorTests.CompensatedStep_LeavesTheNeedleWithinTheStandardsOvershoot</c>).
     /// A single read after the step lands mid-overshoot, not at the settled value, so this
