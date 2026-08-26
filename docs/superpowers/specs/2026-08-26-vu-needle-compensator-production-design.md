@@ -53,6 +53,15 @@ takže **v ustálenom stave sú obe hodnoty zhodné** — stĺpec v okne nastave
 vždy, keď ručička stojí. Líšia sa len počas prechodu, kde je číslo v tabuľke nečitateľné
 a kalibrácia sa podľa neho nerobí.
 
+> **Spresnenie po implementácii.** „Zhodné" platí v reálnej aritmetike, nie doslova
+> v pohyblivej rádovej čiarke. Pevný bod biquadu sadne asi o jeden bit najnižšieho rádu
+> nižšie, než je vstup, a ak výchylka padne presne na hranicu zaokrúhľovania PWM —
+> napríklad 70 % z rozsahu 0–255 je presne 178,5 — spadne rám o jednotku nižšie, než
+> hlási stĺpec. Je to jedna jednotka z 255, teda 0,4 % stupnice, a nie je to kumulatívny
+> drift: po šesťdesiatich tickoch sedí na tej istej hodnote. Pripnuté testom
+> `Tick_CompensatedChannelsSettleOnTheUncompensatedValue`. Meniť kvôli tomu spoločnú
+> `MeterCalibration` by bolo horšie než to priznať.
+
 Kalibračný posuvník sa nemení: `SetTestPwm` obchádza `ChannelPipeline` už dnes a obíde aj
 kompenzátor. Surové PWM ostane surové.
 
