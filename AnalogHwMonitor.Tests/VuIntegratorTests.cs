@@ -159,4 +159,95 @@ public class VuIntegratorTests
 
         Assert.Equal(0.0, integrator.Level);
     }
+
+    [Fact]
+    public void Add_CustomTimeConstantReachesOneMinusOneOverEAtTau()
+    {
+        var integrator = new VuIntegrator(0.015);
+
+        integrator.Add(Constant(0.015, 1.0f, 1), offset: 0, stride: 1, SampleRate);
+
+        Assert.Equal(1.0 - (1.0 / Math.E), integrator.Level, precision: 3);
+    }
+
+    [Fact]
+    public void Constructor_RejectsANonPositiveTimeConstant()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VuIntegrator(0.0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VuIntegrator(-0.010));
+    }
+
+    /// <summary>
+    /// The default must not move: channel 0 is the control in the compensator
+    /// experiment and has to stay bit for bit what it is today.
+    /// </summary>
+    [Fact]
+    public void DefaultTimeConstantIsStillThreeHundredMillisecondsToNinetyNinePercent()
+    {
+        Assert.Equal(0.300 / Math.Log(100.0), VuIntegrator.TimeConstantSeconds, precision: 9);
+
+        var integrator = new VuIntegrator();
+        integrator.Add(Constant(0.300, 1.0f, 1), offset: 0, stride: 1, SampleRate);
+
+        Assert.Equal(0.99, integrator.Level, precision: 2);
+    }
+
+    [Fact]
+    public void AddMono_AveragesTheChannelsOfEachFrame()
+    {
+        // Left at +1.0, right at 0.0: the mono fold is 0.5.
+        var integrator = new VuIntegrator(0.010);
+        var samples = new float[2 * SampleRate];
+        for (var frame = 0; frame < SampleRate; frame++)
+        {
+            samples[frame * 2] = 1.0f;
+            samples[(frame * 2) + 1] = 0.0f;
+        }
+
+        integrator.AddMono(samples, channelCount: 2, SampleRate);
+
+        Assert.Equal(0.5, integrator.Level, precision: 3);
+    }
+
+    /// <summary>
+    /// The fold is (L+R)/2 before rectification, not the average of two rectified
+    /// channels, so anti-phase content cancels. That is what "mono" means here and
+    /// what both needles will be fed during the experiment.
+    /// </summary>
+    [Fact]
+    public void AddMono_CancelsAntiPhaseContent()
+    {
+        var integrator = new VuIntegrator(0.010);
+        var samples = new float[2 * SampleRate];
+        for (var frame = 0; frame < SampleRate; frame++)
+        {
+            samples[frame * 2] = 1.0f;
+            samples[(frame * 2) + 1] = -1.0f;
+        }
+
+        integrator.AddMono(samples, channelCount: 2, SampleRate);
+
+        Assert.Equal(0.0, integrator.Level, precision: 6);
+    }
+
+    [Fact]
+    public void AddMono_HandlesAMonoEndpoint()
+    {
+        var integrator = new VuIntegrator(0.010);
+
+        integrator.AddMono(Constant(1.0, 1.0f, 1), channelCount: 1, SampleRate);
+
+        Assert.Equal(1.0, integrator.Level, precision: 3);
+    }
+
+    [Fact]
+    public void AddMono_IgnoresNonsenseArguments()
+    {
+        var integrator = new VuIntegrator(0.010);
+
+        integrator.AddMono(Constant(0.010, 1.0f, 2), channelCount: 0, SampleRate);
+        integrator.AddMono(Constant(0.010, 1.0f, 2), channelCount: 2, sampleRate: 0);
+
+        Assert.Equal(0.0, integrator.Level);
+    }
 }

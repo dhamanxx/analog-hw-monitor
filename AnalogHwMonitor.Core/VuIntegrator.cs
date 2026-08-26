@@ -52,6 +52,30 @@ public sealed class VuIntegrator
     /// </summary>
     public const double SilenceFloor = 1e-9;
 
+    private readonly double _tau;
+
+    public VuIntegrator()
+        : this(TimeConstantSeconds)
+    {
+    }
+
+    /// <summary>
+    /// A shorter time constant than the standard's 65 ms exists for one reason: the
+    /// throwaway compensator build puts the averaging in the needle compensator
+    /// instead, and leaves this filter doing nothing but rectification and ripple
+    /// rejection.
+    /// </summary>
+    public VuIntegrator(double timeConstantSeconds)
+    {
+        if (timeConstantSeconds <= 0.0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(timeConstantSeconds), timeConstantSeconds, "The time constant must be positive.");
+        }
+
+        _tau = timeConstantSeconds;
+    }
+
     private double _level;
 
     /// <summary>Rectified, filtered amplitude. 0..1 for input samples within -1..1.</summary>
@@ -77,12 +101,47 @@ public sealed class VuIntegrator
             return;
         }
 
-        var alpha = 1.0 - Math.Exp(-1.0 / (sampleRate * TimeConstantSeconds));
+        var alpha = 1.0 - Math.Exp(-1.0 / (sampleRate * _tau));
         var level = Volatile.Read(ref _level);
 
         for (var i = offset; i < block.Length; i += stride)
         {
             level += (Math.Abs(block[i]) - level) * alpha;
+        }
+
+        Volatile.Write(ref _level, level);
+    }
+
+    /// <summary>
+    /// Folds every channel of a frame to one value before rectifying — (L+R)/2, not the
+    /// average of two rectified channels, so anti-phase content cancels the way it does
+    /// on a mono downmix.
+    ///
+    /// Allocates nothing: the span is read in place and the running sum is one double,
+    /// because this is called on the WASAPI capture thread.
+    /// </summary>
+    public void AddMono(ReadOnlySpan<float> block, int channelCount, int sampleRate)
+    {
+        if (channelCount <= 0 || sampleRate <= 0)
+        {
+            return;
+        }
+
+        var alpha = 1.0 - Math.Exp(-1.0 / (sampleRate * _tau));
+        var level = Volatile.Read(ref _level);
+        var frames = block.Length / channelCount;
+
+        for (var frame = 0; frame < frames; frame++)
+        {
+            var start = frame * channelCount;
+            var sum = 0.0;
+
+            for (var channel = 0; channel < channelCount; channel++)
+            {
+                sum += block[start + channel];
+            }
+
+            level += (Math.Abs(sum / channelCount) - level) * alpha;
         }
 
         Volatile.Write(ref _level, level);
@@ -102,7 +161,7 @@ public sealed class VuIntegrator
         }
 
         var level = Volatile.Read(ref _level);
-        var decayed = level * Math.Exp(-elapsed.TotalSeconds / TimeConstantSeconds);
+        var decayed = level * Math.Exp(-elapsed.TotalSeconds / _tau);
 
         Volatile.Write(ref _level, decayed < SilenceFloor ? 0.0 : decayed);
     }
