@@ -178,8 +178,18 @@ nie jeho zlyhanie.
 1. **Menia sa dve premenné** — biquad aj detektor 65,14 → 15 ms. Ak bude pravý horší,
    nebude jasné, ktorá za to môže. Vedomé rozhodnutie majiteľa; `DetectorTauMs` je
    konštanta na vrchu súboru, takže rozpliesť sa to dá jedným riadkom a rebuildom.
-2. **Plant je zmeraný len na pravom meráku.** Ľavý má neznáme ζ a ωₙ, takže
-   „ľavý vs pravý" nie je čistý súboj algoritmov — kusy sa môžu líšiť aj mechanicky.
+2. ~~**Plant je zmeraný len na pravom meráku.**~~ **Vyriešené 2026-08-26 po napísaní
+   tohto dokumentu.** Ľavý merák bol domeraný tým istým postupom,
+   `vu_left_0_to_70_frame_time_angle_value_240fps.csv`: **ζ = 0,377, ωₙ = 11,53 rad/s**,
+   presah 27,8 %, RMSE 0,65 % proti šumu 0,10 %. Proti pravému (0,374 / 11,70) je to
+   rozdiel 0,8 % v ζ a 1,5 % v ωₙ, teda v rámci merateľnosti ten istý kus. „Ľavý vs
+   pravý" je odteraz čistý súboj balistík a kompenzátor naladený na 0,391 / 11,81 sedí
+   na oba.
+
+   Druhý ľavý záznam, `vu_left_0_to_35_...csv`, je nepoužiteľný — tracker prvých 110 ms
+   preskakuje medzi dvoma vetvami (21 % za 8 ms, čo je desaťnásobok fyzikálneho stropu)
+   a stratil celý nábeh. Na túto otázku ho netreba: amplitúdovú závislosť už zavreli tri
+   body na pravom meráku.
 3. **Nedemonštruje zhodu s normou.** Kritérium 300 ms sa mieva zámerne (348 ms) a jitter
    timeru drží presah na 1,5 % medián, 3,2 % v najhoršom.
 4. **Na doznievaní do ticha je kompenzácia orezaná** clampom na nule.
