@@ -4,34 +4,39 @@ namespace AnalogHwMonitor.Core;
 /// One meter's worth of VU ballistics: a full-wave rectifier followed by a one-pole
 /// low-pass filter. The 1942 VU standard asks for 99 % of the steady value within
 /// 300 ms, and a one-pole filter reaches 99 % after ln(100) = 4.605 time constants,
-/// so tau is 300 / 4.605 = 65 ms. Rise and fall share that constant on purpose, because
-/// the standard is symmetric — not because a one-pole filter has no choice. Picking alpha
-/// from whether the sample is above or below the current level would give separate attack
-/// and release, the way every compressor does; that is deliberately not done here.
+/// so the default instance's tau is 300 / 4.605 = 65 ms — <see cref="TimeConstantSeconds"/>.
+/// The constructor now takes tau, so this is only the default; see its overload for why a
+/// caller would ask for a different one. Rise and fall share whatever constant is chosen
+/// on purpose, because the standard is symmetric — not because a one-pole filter has no
+/// choice. Picking alpha from whether the sample is above or below the current level would
+/// give separate attack and release, the way every compressor does; that is deliberately
+/// not done here.
 ///
-/// The consequence is worth knowing before anyone changes it: a symmetric 65 ms means the
-/// needle drops into every gap in the music, and a probe build measured the fall at 67 dB
-/// per 500 ms of digital silence, which is exactly what tau asks for. Modern meters look
-/// smoother because they release over one to three seconds instead. Reading low on music
-/// is the same story from the other side — the meter is average-responding and calibrated
-/// so a full-scale sine reads 0 dBFS, so a track peaking at 0 dBFS sits about 10 dB lower;
-/// measured crest factors on real material were 8.7 to 11.6 dB. None of that is drift to
-/// be corrected. It is what a VU meter is.
+/// The consequence is worth knowing before anyone changes the default: a symmetric 65 ms
+/// means the needle drops into every gap in the music, and a probe build measured the fall
+/// at 67 dB per 500 ms of digital silence, which is exactly what a 65 ms tau asks for.
+/// Modern meters look smoother because they release over one to three seconds instead.
+/// Reading low on music is the same story from the other side — the meter is
+/// average-responding and calibrated so a full-scale sine reads 0 dBFS, so a track peaking
+/// at 0 dBFS sits about 10 dB lower; measured crest factors on real material were 8.7 to
+/// 11.6 dB. None of that is drift to be corrected. It is what a VU meter is.
 ///
 /// Deliberately not a peak meter. A VU meter reads perceived loudness, and the real
 /// moving-coil meter downstream adds its own mechanical inertia on top, so precision
 /// beyond this would be thrown away.
 ///
 /// <see cref="Level"/> is written by two threads without a lock: the audio capture
-/// thread via <see cref="Add"/>, and the UI tick loop via <see cref="Decay"/>.
-/// <see cref="Volatile.Read"/> and <see cref="Volatile.Write"/> ensure each access is
+/// thread via <see cref="Add"/> or <see cref="AddMono"/>, and the UI tick loop via
+/// <see cref="Decay"/>. <see cref="Volatile.Read"/> and <see cref="Volatile.Write"/>
+/// ensure each access is
 /// atomic and the value is never torn, but they do not make the read-modify-write pair
 /// atomic — an overlapping update can be lost. This is accepted rather than guarded,
 /// because a lost update is self-correcting within one buffer: whichever write lands,
 /// the next call reads it and carries on, so the level can be one buffer behind but
 /// never stuck. The window is also narrow by construction: the tick loop only decays
-/// after a silence gap when the capture thread is not calling <see cref="Add"/>.
-/// A lock is not worth taking on the capture path to correct something no needle can show.
+/// after a silence gap when the capture thread is not calling <see cref="Add"/> or
+/// <see cref="AddMono"/>. A lock is not worth taking on the capture path to correct
+/// something no needle can show.
 /// </summary>
 public sealed class VuIntegrator
 {
@@ -41,10 +46,13 @@ public sealed class VuIntegrator
     /// <summary>
     /// Below this the level is snapped to zero instead of decaying further. An exponential
     /// decay never reaches zero, so without a floor a long silence drives the filter state
-    /// down without limit — measured at about -140 dB per second, so a minute of quiet takes
-    /// it past 1e-300 and into denormal doubles, where arithmetic carries a penalty. That
-    /// matters here only because <see cref="Add"/> runs per sample on the WASAPI capture
-    /// thread, which is the one thread that must never be slow.
+    /// down without limit — at roughly (20 / ln 10) / tau dB per second, which is about
+    /// -140 dB/s for the default 65 ms instance and, since this build also creates one
+    /// with a 15 ms tau, roughly four times that for it. Either way a minute of quiet
+    /// takes the level past 1e-300 and into denormal doubles, where arithmetic carries a
+    /// penalty. That matters here only because <see cref="Add"/> and
+    /// <see cref="AddMono"/> run per sample on the WASAPI capture thread, which is the one
+    /// thread that must never be slow.
     ///
     /// 1e-9 is safe by a wide margin rather than by a hair: the reported floor,
     /// <c>AudioSensorIds.FloorDbfs</c> at -100 dBFS, corresponds to a level near 6.4e-6, so

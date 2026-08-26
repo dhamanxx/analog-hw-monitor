@@ -88,6 +88,56 @@ public class AudioLevelSensorSourceTests
     }
 
     /// <summary>
+    /// The two tests above only ever assert the clamp rails — 99-100 % and 0.0 % are what
+    /// <c>Math.Clamp(shaped, 0.0, 100.0)</c> returns for any dB window ReadNeedle happens
+    /// to use, so neither would notice if the window were wrong. This is the one that
+    /// would: a sine at -12 dBFS lands at 70 % of the dial on the -40..0 window
+    /// (<see cref="VuModeSwitch.DefaultMinDbfs"/>/<see cref="VuModeSwitch.DefaultMaxDbfs"/>)
+    /// and nowhere near that on any other plausible window — -60..0, for instance, would
+    /// settle at 80 %.
+    ///
+    /// The needle is a filter with memory, not a snapshot: the detector's own time
+    /// constant is <see cref="NeedleCompensator.DetectorTauMs"/> (15 ms, well inside one
+    /// 40 ms tick given a steady signal), but the compensator downstream of it is a
+    /// second-order filter whose own settling time is about 320 ms /
+    /// 8 ticks (<c>NeedleCompensatorTests.CompensatedStep_LeavesTheNeedleWithinTheStandardsOvershoot</c>).
+    /// A single read after the step lands mid-overshoot, not at the settled value, so this
+    /// re-delivers the same steady sine every tick (keeping the buffer fresh enough that
+    /// <c>ApplySilenceDecay</c> never fires past <see cref="AudioLevelSensorSource.SilenceGap"/>)
+    /// and reads across 60 ticks — 2.4 s, well past the compensator's t99 — before
+    /// asserting on the last value.
+    /// </summary>
+    [Fact]
+    public void Read_NeedleSettlesAtTheMidScaleWindowForAMidScaleSignal()
+    {
+        var (source, capture, time) = Build();
+        using (source)
+        {
+            // Primes the compensator at 0, same as Read_NeedleIsSilentBeforeAnySignal.
+            source.Read(AudioSensorIds.Needle);
+
+            // -12 dBFS: peak = 10^(-12/20), the inverse of the pi/2 peak calibration
+            // Read_ReportsHalfScaleAsAboutMinusSixDecibels pins for -6 dBFS.
+            var peak = (float)Math.Pow(10.0, -12.0 / 20.0);
+
+            var value = 0.0f;
+            for (var tick = 0; tick < 60; tick++)
+            {
+                capture.DeliverSine(seconds: 0.1, peak: peak);
+                time.Advance(TimeSpan.FromMilliseconds(40));
+                value = source.Read(AudioSensorIds.Needle)!.Value;
+            }
+
+            // 70 % is what -12 dBFS maps to on the -40..0 window. The tolerance covers
+            // the dBFS-to-percent sensitivity (2.5 points per dB) against the sub-0.1 dB
+            // rounding a heavily-filtered 1 kHz sine leaves in the detector, plus residual
+            // compensator settling error — nowhere near the 10-point gap a wrong window
+            // (e.g. -60..0, which would settle at 80 %) would produce.
+            Assert.InRange(value, 68.5f, 71.5f);
+        }
+    }
+
+    /// <summary>
     /// Both meters see the same mono fold during the experiment, so reading the needle
     /// must not change what the left channel reports.
     ///

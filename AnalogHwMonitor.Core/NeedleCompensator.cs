@@ -20,10 +20,17 @@ namespace AnalogHwMonitor.Core;
 /// in the level is amplified by about 29 %.
 ///
 /// <see cref="TargetOmegaN"/> is 13.4221 rather than the 16 that would also meet the
-/// standard's 300 ms criterion. An inverse filter has to cancel the plant *on time*, and
-/// WinForms timer jitter of -8/+16 ms takes 16 from 1.0 % overshoot to 2.0 % median and
-/// 5.9 % worst across twelve simulated runs, while 13.4221 holds 1.5 % and 3.2 %. The
-/// 300 ms criterion is given up deliberately; the delivered t99 is about 348 ms.
+/// standard's 300 ms criterion. An inverse filter has to cancel the plant *on time*, so
+/// it minds WinForms timer jitter in a way the plant itself does not. The design
+/// document's jitter simulation (-8/+16 ms, twelve runs, lives outside this repository
+/// and is not reproduced by anything here) reports 16 degrading from 1.0 % overshoot to
+/// 2.0 % median and 5.9 % worst, against 1.5 % and 3.2 % for 13.4221 — that comparison is
+/// why 13.4221 was chosen. The 300 ms criterion is given up deliberately as a result. The
+/// one t99 this repository actually measures is 320 ms, in
+/// NeedleCompensatorTests.CompensatedStep_LeavesTheNeedleWithinTheStandardsOvershoot,
+/// which drives the compensator straight into the simulated plant with no detector and
+/// no timer jitter in the loop; the design document's simulated figure for the detector-
+/// plus-jitter case is about 348 ms.
 /// </summary>
 public sealed class NeedleCompensator
 {
@@ -101,9 +108,19 @@ public sealed class NeedleCompensator
     }
 
     /// <summary>
-    /// Drops the history. Called wherever the integrators are reset, because a capture
-    /// that stops and starts again would otherwise resume against a stale two-tick
-    /// history and kick the needle.
+    /// Drops the history. Reached only through
+    /// <see cref="AudioLevelSensorSource.EnsureStarted"/>, alongside the level
+    /// integrators' own reset, so it covers a capture's first start and any restart that
+    /// follows a genuine <c>Stop()</c> — the idle timeout, a default-device change, or
+    /// recovery from a failed start.
+    ///
+    /// It does NOT cover every path back into VU meter mode. Toggling VU mode off and
+    /// back on within <see cref="AudioLevelSensorSource.IdleTimeout"/> (5 s) never calls
+    /// <c>Stop()</c> — the capture is still running, just unread — so <c>EnsureStarted</c>
+    /// returns early and this method is not called. That path resumes on whatever
+    /// two-tick history was here before the gap, with the next <see cref="Advance"/>
+    /// call's <c>dt</c> clamped to <see cref="MaxStep"/>: one kick on the needle, not the
+    /// stale-history problem this reset exists to prevent.
     /// </summary>
     public void Reset()
     {
