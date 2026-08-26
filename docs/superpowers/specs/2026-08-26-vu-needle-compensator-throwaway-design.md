@@ -238,20 +238,37 @@ Dve z troch pozorovaní sú čistá balistika a **nie sú ničím zamútené**:
 
 Obe sú presne to, čo simulácia predpovedala, a obe sú dôvodom, prečo build vznikol.
 
-## Čo z toho zatiaľ pripísať nemožno
+## Confound: overený a odstránený
 
-**„podstatne presnejšie"** je jediné pozorovanie, ktoré padá do tieňa confoundu z
-limitácie č. 1. Skrátený detektor priemeruje v dB doméne, kým dnešný v amplitúdovej, a
+Po prvom behu ostávalo jedno pozorovanie nepripísateľné, a tak sa postavila kontrolná
+verzia. `DetectorTauMs` v nej nie je číslo, ale väzba na `VuIntegrator.TimeConstantSeconds`
+— tú istú konštantu, akú používa nekompenzovaný reťazec — takže oba detektory sú identické
+konštrukciou a **biquad je jediným rozdielom medzi vetvami**. Verdikt majiteľa po druhej
+relácii:
+
+> „overené je to podstatne lepšie ako ľavý meter"
+
+**Tým sú všetky tri pozorovania balistika.** Aj „podstatne presnejšie" — pri zhodných
+detektoroch je posun úrovne nulový, takže to, čo oko vidí, nemôže byť nič iné než odobratý
+presah a odobraté kmitanie. Kompenzátor vyhral na vlastnom teréne, nie vedľajším účinkom.
+
+Kontrolná verzia navyše odstránila aj limitáciu č. 4: pri zdieľanej 65 ms konštante
+detektor absorbuje 150 ms `SilenceGap` pri 2,3 τ presne ako jeho susedia, takže doznievanie
+do digitálneho ticha je férové meranie a nie meranie politiky medzery.
+
+### Čo bolo za tým confoundom
+
+Ponechané, lebo je to netriviálne a ľahko sa to zopakuje. Skrátený detektor priemeruje v dB doméne, kým dnešný v amplitúdovej, a
 Jensenova nerovnosť z toho robí systematický posun: pravý číta na dynamickom materiáli
 nižšie — odmerané −2,6 % na náhodných 60 ms zhlukoch, −6,2 % pri striedaní −6/−26 dBFS,
 −20,3 % pri striedaní 0/−40 dBFS, a presne 0,0 % na ustálenom tóne. Pri `DetectorTauMs`
 prepnutom na 65,14 ms je ten posun nula vo všetkých štyroch prípadoch, čiže ho robí celý
 detektor a nie biquad, ktorého jednosmerný zisk je presne 1.
 
-„Presnejšie" teda môže znamenať dve rôzne veci a z jednej relácie sa nerozlíšia: buď že
-ručička sedí bližšie k tomu, čo hudba naozaj robí, alebo že sa oku páči, keď merák číta
-o pár percent nižšie. **Rozhodne to jedna kontrolná relácia** s `DetectorTauMs = 65,14`,
-kde je biquad jediným rozdielom — jedna konštanta a rebuild.
+„Presnejšie" mohlo znamenať dve rôzne veci — buď že ručička sedí bližšie k tomu, čo hudba
+naozaj robí, alebo že sa oku páči, keď merák číta o pár percent nižšie — a z prvej relácie
+sa nerozlíšili. Rozlíšila ich kontrolná relácia vyššie: pri zhodných detektoroch je posun
+nulový a pravý merák je aj tak podstatne lepší, takže platí prvé.
 
 ## Ďalší krok
 
