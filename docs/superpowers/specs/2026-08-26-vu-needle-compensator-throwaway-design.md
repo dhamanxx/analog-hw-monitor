@@ -210,3 +210,56 @@ nie jeho zlyhanie.
 ## Návrat
 
 `git checkout main`, rebuild, zmazať `config.throwaway.json`. `main` sa nedotkne.
+
+---
+
+# Výsledok
+
+Build sa postavil celý (päť taskov, sedem commitov), prešiel 198 testami a bežal na
+skutočnom hardvéri s oboma meráčmi vedľa seba. Verdikt majiteľa:
+
+> „jednoznačne pravý to znamená kompenzovaný meter je lepší menaj prekmitov a je to
+> podstatne presnejšie a na 0 to nenaraža na doraz"
+
+Pravý je nový reťazec: detektor τ = 15 ms, inverzný biquad ζ 0,81 / ωₙ 13,4221, tá istá
+stupnica −40…0 dBFS ako vľavo. **Toto je opačný verdikt než pri predchádzajúcom
+experimente**, kde vyhral dnešný kód — a je to konzistentné: vtedy sa dorábal presah
+1,3 % k meráku, ktorý ich už 26 % robil sám, teraz sa tých 26 % odoberá.
+
+## Čo z toho platí bez výhrad
+
+Dve z troch pozorovaní sú čistá balistika a **nie sú ničím zamútené**:
+
+- **„menej prekmitov"** — presah ide 22,6 % → 0,9 %, a robí to výhradne biquad.
+- **„na 0 to nenaráža na doraz"** — ručička sa dorazu dotkne na −0,4 % namiesto toho, aby
+  doň dnes tlačila 16,3 %. Tiež výhradne biquad.
+
+Obe sú presne to, čo simulácia predpovedala, a obe sú dôvodom, prečo build vznikol.
+
+## Čo z toho zatiaľ pripísať nemožno
+
+**„podstatne presnejšie"** je jediné pozorovanie, ktoré padá do tieňa confoundu z
+limitácie č. 1. Skrátený detektor priemeruje v dB doméne, kým dnešný v amplitúdovej, a
+Jensenova nerovnosť z toho robí systematický posun: pravý číta na dynamickom materiáli
+nižšie — odmerané −2,6 % na náhodných 60 ms zhlukoch, −6,2 % pri striedaní −6/−26 dBFS,
+−20,3 % pri striedaní 0/−40 dBFS, a presne 0,0 % na ustálenom tóne. Pri `DetectorTauMs`
+prepnutom na 65,14 ms je ten posun nula vo všetkých štyroch prípadoch, čiže ho robí celý
+detektor a nie biquad, ktorého jednosmerný zisk je presne 1.
+
+„Presnejšie" teda môže znamenať dve rôzne veci a z jednej relácie sa nerozlíšia: buď že
+ručička sedí bližšie k tomu, čo hudba naozaj robí, alebo že sa oku páči, keď merák číta
+o pár percent nižšie. **Rozhodne to jedna kontrolná relácia** s `DetectorTauMs = 65,14`,
+kde je biquad jediným rozdielom — jedna konštanta a rebuild.
+
+## Ďalší krok
+
+Toto **nie je merge**. Vetva je throwaway a `Program.cs` v nej presmerúva konfiguráciu do
+`config.throwaway.json`, `VuIntegrator` má mŕtvu preťaženú metódu a oba VU kanály dostávajú
+mono. Víťazstvo kompenzátora znamená nový spec pre poriadnu implementáciu, a ten by mal
+vyriešiť aspoň:
+
+- **v ktorej doméne sa priemeruje** — kontrolná relácia vyššie je jeho vstup;
+- **stereo** — mono fold bol len kvôli férovosti porovnania;
+- **jitter timeru**, ktorý je dnes limitom presnosti kompenzátora, nie matematika;
+- **druhý merák** — ľavý je zmeraný (ζ 0,377 / ωₙ 11,53) a od pravého sa líši o 0,8 %,
+  takže jedna sada konštánt stačí na oba, ale kompenzátor musí bežať na oboch kanáloch.
