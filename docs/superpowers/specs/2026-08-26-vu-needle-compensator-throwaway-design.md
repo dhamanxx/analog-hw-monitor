@@ -256,6 +256,33 @@ Kontrolná verzia navyše odstránila aj limitáciu č. 4: pri zdieľanej 65 ms 
 detektor absorbuje 150 ms `SilenceGap` pri 2,3 τ presne ako jeho susedia, takže doznievanie
 do digitálneho ticha je férové meranie a nie meranie politiky medzery.
 
+## Prečo je to na hudbe lepšie, než skokový test naznačuje
+
+Doplnené pozorovanie majiteľa po kontrolnej relácii:
+
+> „ručička je menej rozlietaná a nekmitá ako besná"
+
+Toto nie je prekmit z transientu a skokový test to nezmeria. Je to **mechanická rezonancia
+ručičky s rytmom hudby**. Pri `ζ = 0,391` má prenos od povelu k výchylke vrchol
+**+2,86 dB na 1,57 Hz**, čo je **94 BPM** — priamo v pásme, kde má obálka bežnej hudby
+najviac energie. Doba ručičku doslova rozhojdáva.
+
+Cieľové `ζ = 0,81` je nad hranicou `1/√2 = 0,707`, a nad ňou systém druhého rádu
+**rezonančný vrchol nemá vôbec**; prenos je monotónny. Rozdiel v pásme, kde hudba bije:
+
+| obálka | dnes | s biquadom | rozdiel |
+|---|---|---|---|
+| 60 BPM | +1,63 dB | −0,74 dB | −2,4 dB |
+| 84 BPM | +2,70 dB | −1,62 dB | −4,3 dB |
+| 94 BPM *(rezonancia)* | +2,86 dB | −2,12 dB | **−5,0 dB** |
+| 120 BPM | +1,49 dB | −3,65 dB | **−5,1 dB** |
+| 200 BPM | −7,94 dB | −9,13 dB | −1,2 dB |
+
+Štyri až päť decibelov ubratého rozkmitu presne tam, kde ho hudba budí. Poriadna
+implementácia by mala túto vlastnosť brať ako prvotriedny cieľ, nie ako vedľajší produkt
+presahu: `ζ > 0,707` je hranica, pod ktorú netreba ísť, aj keby sa niekto rozhodol ladiť
+`ζ` a `ωₙ` inak než na normu.
+
 ### Čo bolo za tým confoundom
 
 Ponechané, lebo je to netriviálne a ľahko sa to zopakuje. Skrátený detektor priemeruje v dB doméne, kým dnešný v amplitúdovej, a
