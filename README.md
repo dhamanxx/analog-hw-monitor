@@ -171,11 +171,12 @@ channel therefore stores two calibration points.
 Everything between those two points is interpolated linearly. Other channels keep
 running normally while one is being calibrated.
 
-On a VU channel the **PWM** column shows the value the level maps to, not always the value
-on the wire. The needle correction described above shapes the command during a transient
-and leaves it alone once the reading settles, so the two agree whenever the needle is
-standing still — which is when you calibrate. The **Set PWM** slider bypasses the
-correction completely, so a raw value stays exactly where you put it.
+On a VU channel the **PWM** column shows the value the level maps to. The needle correction
+described above shapes the command only while the reading is moving; once it settles, the
+column and the wire agree to within one PWM step of 255 — not always exactly, since the
+filter's fixed point can settle a hair low and a level sitting on an exact rounding midpoint
+falls to the lower side. That single-step difference is not a fault to chase. The slider
+bypasses the correction completely, so a raw value stays exactly where you put it.
 
 ## VU meter mode
 
