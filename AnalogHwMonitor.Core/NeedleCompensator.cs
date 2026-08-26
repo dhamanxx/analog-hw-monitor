@@ -13,9 +13,13 @@ namespace AnalogHwMonitor.Core;
 ///   C(s) = -------------------------------
 ///          wp^2 * (s^2 + 2*zt*wt*s + wt^2)
 ///
-/// DC gain is exactly 1, so a compensated meter reads the same steady level as an
-/// uncompensated one — which is why the settings window can keep showing the uncompensated
-/// percentage. High-frequency gain is wt^2/wp^2 = 1.2916: finite, so nothing is
+/// DC gain is exactly 1, so at rest a compensated meter reads the same steady level as an
+/// uncompensated one to within one PWM step of 255 — the biquad's fixed point settles
+/// about one ULP low, and a level sitting on an exact PWM rounding midpoint falls to the
+/// byte below the uncompensated one (see MonitorServiceTests.
+/// Tick_CompensatedChannelsSettleOnTheUncompensatedValue). That one-step slack is why the
+/// settings window can keep showing the uncompensated percentage. High-frequency gain is
+/// wt^2/wp^2 = 1.2916: finite, so nothing is
 /// differentiated and the filter cannot run away. The price is that tick-to-tick noise in
 /// the level is amplified by about 29 %.
 ///
@@ -68,9 +72,10 @@ public sealed class NeedleCompensator
 
     /// <summary>
     /// Advances one tick and returns the shaped deflection command, which is deliberately
-    /// NOT clamped to 0-100: the caller clamps, because the amount the command wants to go
-    /// out of range is the amount of compensation being lost, and that is worth being able
-    /// to see from the outside.
+    /// NOT clamped to 0-100 here: this class has no idea what range the result is destined
+    /// for, so clamping is the caller's business, not this filter's. <see
+    /// cref="MonitorService.Tick"/> is the one caller today, and it clamps inline before
+    /// turning the result into PWM.
     /// </summary>
     public double Advance(double percent, TimeSpan elapsed)
     {

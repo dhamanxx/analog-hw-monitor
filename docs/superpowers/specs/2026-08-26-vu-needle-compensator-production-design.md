@@ -150,12 +150,37 @@ trvá dva ticky.
 
 Dve inštancie kompenzátora, po jednej na VU kanál, vlastní ich `MonitorService`.
 
-Resetujú sa v dvoch prípadoch:
+Resetujú sa v troch prípadoch:
 
 - **pri prepnutí VU režimu** — inak by po zapnutí pokračoval na histórii spred vypnutia;
 - **kým senzor vracia `null`** — nie raz pri prechode do mŕtva, ale pri každom takom ticku,
   takže stav je čistý v okamihu, keď sa kanál vráti k životu. Reset je lacný a idempotentný,
-  takže to nestojí za rozlišovanie hrany.
+  takže to nestojí za rozlišovanie hrany;
+- **kým je kanál pripnutý kalibračným posuvníkom** (`SetTestPwm`) — posuvník obchádza
+  `ChannelPipeline` aj kompenzátor, takže história spred dotyku posuvníka opisuje inú
+  úroveň, než na akú sa kanál po pustení vráti. Reset beží pri každom pripnutom ticku, nie
+  raz pri dotyku, z rovnakého dôvodu ako pri `null` senzore.
+
+### Čo reset nezachytí
+
+Vyššie uvedené tri prípady nie sú vyčerpávajúci zoznam. Rovnakou dierou — mutáciou
+existujúceho `ChannelConfig`/`AppConfig`, ktorú si nevšimne ani setter `Config`, ani
+kontrola zmeny VU režimu v `Tick` — prechádzajú aj tieto:
+
+- **zmena rozsahu kanála** (`Min`/`Max`) z okna nastavení, kým VU režim beží — kompenzátor
+  ďalej pracuje s históriou počítanou podľa starého mapovania;
+- **uloženie zmeny kompenzácie hlasitosti** (`vuCompensateVolume`) za tých istých
+  podmienok — vie posunúť úroveň až o celý 40 dB strop kompenzácie (`MaxCompensationDb`)
+  oproti 40 dB širokému oknu;
+- **prepnutie VU režimu vypnuté → zapnuté → vypnuté medzi dvoma tickami** — mimo VU
+  režimu je tick 1000 ms, takže sa doň zmestí celé omylné kliknutie a kontrola zmeny
+  v `Tick` prechod nikdy neuvidí;
+- **prebudenie z uspatia**.
+
+Všetky štyri sú ohraničené rovnako: vysokofrekvenčný zisk filtra oreže najhorší jeden
+tick na približne 29 % nad krokom — to isté číslo ako v sekcii „Orezanie na 0–100 % a jeho
+cena" vyššie — a zvyšok zjedáva orezanie na 0–100 %. Nič z toho sa tu neopravuje — len sa
+to priznáva.
 
 ## Testy
 
@@ -176,7 +201,8 @@ prejsť všetkými ostatnými testami a ticho vrátiť rezonanciu.
   celej pipeline, nie len filtra;
 - kalibračný posuvník (`SetTestPwm`) kompenzátor obchádza;
 - mimo VU režimu sa kompenzátor neuplatní na žiadny kanál;
-- reset nastane pri prepnutí režimu aj pri `null` zo senzora.
+- reset nastane pri prepnutí režimu, pri `null` zo senzora aj pri pripnutí kalibračným
+  posuvníkom.
 
 ## Spojka na druhý spec
 

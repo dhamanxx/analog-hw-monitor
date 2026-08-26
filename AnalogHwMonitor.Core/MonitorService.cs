@@ -147,9 +147,12 @@ public sealed class MonitorService : IDisposable
             // channel never looks like a healthy idle one.
             double percent;
 
-            // What the frame carries and what the reading reports are the same byte
-            // everywhere except mid-transient on a compensated channel, so they are two
-            // variables rather than one.
+            // What the frame carries and what the reading reports are two variables
+            // because they can disagree: obviously mid-transient on a compensated channel,
+            // but also at rest — the biquad's fixed point settles about one ULP low, and a
+            // level sitting on an exact PWM rounding midpoint (70 % of 0..255 is 178.5)
+            // falls to the byte below what the reading reports. That is at most one step of
+            // 255, never a drift. See Tick_CompensatedChannelsSettleOnTheUncompensatedValue.
             byte reportedPwm;
 
             if (missing)
@@ -166,14 +169,35 @@ public sealed class MonitorService : IDisposable
                 reportedPwm = pwmValues[i];
 
                 // The compensated command goes to the meter; `percent` and reportedPwm
-                // stay uncompensated and are what ChannelReading carries below. At rest
-                // the two are identical, because the compensator's DC gain is 1 — they
-                // part only during a transient, where the settings window's number would
-                // be unreadable anyway and calibration does not use it.
+                // stay uncompensated and are what ChannelReading carries below. The
+                // compensator's DC gain is exactly 1, so at rest the two agree to within
+                // one PWM step of 255 — see
+                // Tick_CompensatedChannelsSettleOnTheUncompensatedValue for the one-ULP
+                // rounding case that keeps them from being byte-identical. They part
+                // further during a transient, where the settings window's number would be
+                // unreadable anyway and calibration does not use it.
                 if (Config.VuMode && _compensators[i] is { } compensator)
                 {
-                    var shaped = Math.Clamp(compensator.Advance(percent, elapsed), 0.0, 100.0);
-                    pwmValues[i] = MeterCalibration.ToPwm(shaped, channel.MinPwm, channel.MaxPwm);
+                    if (double.IsFinite(percent))
+                    {
+                        var shaped = Math.Clamp(compensator.Advance(percent, elapsed), 0.0, 100.0);
+                        pwmValues[i] = MeterCalibration.ToPwm(shaped, channel.MinPwm, channel.MaxPwm);
+                    }
+                    else
+                    {
+                        // percent is only non-finite here if the sensor answered with NaN or
+                        // infinity — unreachable from the audio source, which floors its own
+                        // output, but reachable from a channel re-pointed at another sensor
+                        // from the settings window while VU mode stays on. `missing` is false
+                        // (the sensor did answer), so the branch above never fires for this.
+                        // Feeding a non-finite value into Advance would poison the biquad's
+                        // doubles permanently: every later tick would return NaN too, which
+                        // ToPwm turns into 0, and nothing would ever reset it. Resetting here
+                        // instead means the compensator reprimes clean on the next finite
+                        // tick, and this tick's frame is left exactly as ChannelPipeline left
+                        // it above — the same as an uncompensated channel already behaves.
+                        compensator.Reset();
+                    }
                 }
             }
 

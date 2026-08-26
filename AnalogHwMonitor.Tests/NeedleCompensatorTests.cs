@@ -190,8 +190,9 @@ public class NeedleCompensatorTests
     /// of amplitude 25 about mid-scale, measured over the second half of the run so the
     /// start-up transient is excluded.
     ///
-    /// 25 about 50 is chosen so the shaped command stays inside 0-100 — the compensator's
-    /// high-frequency gain is 1.2916, so it swings roughly 36 to 68 and never meets the
+    /// 25 about 50 is chosen so the shaped command stays inside 0-100 — at 1.57 Hz the
+    /// compensator's gain is about 0.564, not its asymptotic high-frequency value of
+    /// 1.2916, so the steady-state command swings 36.0 to 64.0 and never meets the
     /// caller's clamp. A larger amplitude would measure clipping instead of ballistics.
     /// </summary>
     private static double SteadySwing(double hertz, bool compensated)

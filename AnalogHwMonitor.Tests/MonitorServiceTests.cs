@@ -370,6 +370,40 @@ public class MonitorServiceTests
     }
 
     /// <summary>
+    /// A non-finite reading is unreachable from the audio source, which floors its own
+    /// output, but reachable from a channel re-pointed at another sensor from the settings
+    /// window while VU mode stays on. `missing` is false for it (the sensor did answer),
+    /// so the null-sensor reset above does not fire.
+    ///
+    /// Without a guard, feeding NaN into the biquad poisons its state permanently: every
+    /// later tick returns NaN too, which MeterCalibration.ToPwm turns into 0 — a needle
+    /// parked at zero that nothing would ever clear. This proves the channel instead
+    /// recovers on the very next healthy tick, the same as an uncompensated channel would.
+    /// </summary>
+    [Fact]
+    public void Tick_RecoversAfterANonFiniteReading()
+    {
+        var (config, sensors) = VuModeAt(-12f);
+        var link = new FakeMeterLink();
+        var time = new FakeTimeProvider();
+        using var service = new MonitorService(sensors, link, config, NullLog.Instance, time);
+
+        time.Advance(TimeSpan.FromMilliseconds(40));
+        service.Tick();
+
+        sensors.Set(AudioSensorIds.Left, float.NaN);
+        time.Advance(TimeSpan.FromMilliseconds(40));
+        service.Tick();
+
+        sensors.Set(AudioSensorIds.Left, -12f);
+        time.Advance(TimeSpan.FromMilliseconds(40));
+        service.Tick();
+
+        // Primed, not poisoned: 70 % straight through, same as any other reset-and-recover.
+        Assert.StartsWith("V:179,", link.Frames[^1]);
+    }
+
+    /// <summary>
     /// The tray and the settings window turn VU mode on by mutating the configuration the
     /// service already holds, so the Config setter never runs and cannot be what drops the
     /// history. Only the VU mode check in Tick can, and this pins it.
