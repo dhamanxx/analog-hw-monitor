@@ -11,7 +11,29 @@ internal static class Program
 
         var directory = AppContext.BaseDirectory;
         var log = new FileLog(Path.Combine(directory, "log.txt"));
-        var store = new ConfigStore(Path.Combine(directory, "config.json"));
+        // THROWAWAY MEASUREMENT BUILD. Everything that saves configuration goes through
+        // this one store — the tray's VU toggle and the settings window's Save both
+        // write through MonitorService.Config — so redirecting it here is what keeps the
+        // real config.json untouched. Cloning AppConfig does NOT achieve this; see the
+        // conclusion of docs/superpowers/specs/2026-08-26-vu-second-order-throwaway-design.md.
+        var throwawayPath = Path.Combine(directory, "config.throwaway.json");
+        var realPath = Path.Combine(directory, "config.json");
+
+        if (!File.Exists(throwawayPath) && File.Exists(realPath))
+        {
+            // Seeded from the real file so the build keeps the meters' calibration.
+            // MinPwm/MaxPwm belong to the physical meter and the experiment needs them.
+            try
+            {
+                File.Copy(realPath, throwawayPath);
+            }
+            catch (Exception ex)
+            {
+                log.Write($"Could not seed the throwaway configuration: {ex.Message}");
+            }
+        }
+
+        var store = new ConfigStore(throwawayPath);
 
         var loaded = store.Load();
         if (loaded.Outcome != ConfigLoadOutcome.Loaded)
@@ -20,6 +42,27 @@ internal static class Program
         }
 
         var config = loaded.Config;
+
+        // THROWAWAY MEASUREMENT BUILD. Forced rather than left to VuModeSwitch, because
+        // Set() is a no-op when VU mode is already on and would then swap in a stash that
+        // predates this build. Both channels get the same -40..0 window: channel 0 through
+        // its Min/Max as usual, channel 1 inside the audio source, because its sensor
+        // already reports deflection and its Min/Max is the 0..100 pass-through.
+        log.Write(
+            "THROWAWAY measurement build: needle compensator on channel 1. "
+            + "config.throwaway.json is in use and config.json is not written.");
+
+        VuModeSwitch.Set(config, true);
+
+        config.Channels[0].Label = "VU Left";
+        config.Channels[0].SensorId = AudioSensorIds.Left;
+        config.Channels[0].Min = VuModeSwitch.DefaultMinDbfs;
+        config.Channels[0].Max = VuModeSwitch.DefaultMaxDbfs;
+
+        config.Channels[1].Label = "VU Right (comp)";
+        config.Channels[1].SensorId = AudioSensorIds.Needle;
+        config.Channels[1].Min = 0.0;
+        config.Channels[1].Max = 100.0;
 
         // Each sensor source is constructed under its own guard. LibreHardwareMonitor
         // opens a ring0 driver in its constructor and can fail outright; when it does,
