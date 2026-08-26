@@ -70,6 +70,21 @@ public sealed class AudioLevelSensorSource : ISensorSource
     // THROWAWAY MEASUREMENT BUILD. A third detector, deliberately much faster than the
     // two above, because the averaging the standard asks for is done by the compensator
     // rather than by this filter.
+    //
+    // Known limitation of the experiment, and it is about SilenceGap rather than tau.
+    // When WASAPI stops delivering buffers altogether — digital silence, not quiet
+    // music — nothing decays for the whole of SilenceGap (150 ms), and then a single
+    // ApplySilenceDecay call collapses this filter in one step, because 150 ms is ten
+    // of its 15 ms time constants. The 65 ms integrators beside it absorb the same gap
+    // at 2.3 tau and barely notice it. So the compensated needle's release into digital
+    // silence measures the gap policy and not its ballistics, and a release measured
+    // that way must not be read as a result of this experiment.
+    //
+    // Music is unaffected: buffers keep arriving, ApplySilenceDecay never fires, and
+    // this detector tracks the samples properly — which is the case the experiment is
+    // actually about. Deliberately not fixed here: SilenceGap is shared with channel 0,
+    // which is the control and must not change, and a second gap policy is scope this
+    // throwaway does not need.
     private readonly VuIntegrator _needleDetector = new(NeedleCompensator.DetectorTauMs / 1000.0);
     private readonly NeedleCompensator _compensator = new();
     private long _lastNeedleTicks;
@@ -256,9 +271,14 @@ public sealed class AudioLevelSensorSource : ISensorSource
             var shaped = _compensator.Advance(percent, now - previous);
 
             // The compensator returns unclamped on purpose; this is where the command
-            // meets a needle that has a peg at each end. On a release into digital
-            // silence it asks for about -11 % for seven ticks and loses that much
-            // compensation, which is a known and documented limit of the build.
+            // meets a needle that has a peg at each end, and what gets clamped away is
+            // compensation lost. Released from full deflection at the 40 ms VU tick the
+            // command dips to about -6.3 % on the first tick and is back above zero on
+            // the next, so the loss is one tick of a slightly delayed fall rather than a
+            // sustained one. Measured by
+            // NeedleCompensatorTests.Release_AsksForANegativeCommandTheClampMustDiscard;
+            // the dip scales with the deflection released from and grows as the tick
+            // shortens, so re-measure it if the VU timer ever changes.
             return (float)Math.Clamp(shaped, 0.0, 100.0);
         }
     }

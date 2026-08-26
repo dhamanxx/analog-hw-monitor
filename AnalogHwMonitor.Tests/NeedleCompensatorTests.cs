@@ -148,4 +148,49 @@ public class NeedleCompensatorTests
         Assert.InRange((peak - 70.0) / 70.0 * 100.0, 0.5, 1.5);
         Assert.InRange(t99.TotalMilliseconds, 280.0, 360.0);
     }
+
+    /// <summary>
+    /// Cancelling an under-damped plant on a release means asking the needle to go
+    /// backwards briefly, and a needle has a peg at zero. This pins the size of that
+    /// ask, because <c>AudioLevelSensorSource.ReadNeedle</c> clamps it away and the
+    /// amount clamped is the amount of compensation lost.
+    ///
+    /// Released from full deflection at the 40 ms VU tick the command dips to about
+    /// -6.3 % on the first tick and is positive again on the next one — one tick, not a
+    /// run of them. The filter is linear, so the dip is proportional to the deflection
+    /// released from, and it grows as the tick shortens (about -13 % at 25 ms, -25 % at
+    /// 5 ms). The figure is therefore specific to this tick rate and worth re-measuring
+    /// if the VU timer changes.
+    /// </summary>
+    [Fact]
+    public void Release_AsksForANegativeCommandTheClampMustDiscard()
+    {
+        var compensator = new NeedleCompensator();
+        compensator.Advance(100.0, Tick);
+
+        // Settle, so the release starts from a genuine steady state rather than from
+        // the priming call's history.
+        for (var i = 0; i < 60; i++)
+        {
+            compensator.Advance(100.0, Tick);
+        }
+
+        var release = new List<double>();
+        for (var i = 0; i < 10; i++)
+        {
+            release.Add(compensator.Advance(0.0, Tick));
+        }
+
+        // Meaningfully negative, and on the first tick of the release.
+        Assert.InRange(release[0], -8.0, -5.0);
+        Assert.Equal(release.Min(), release[0]);
+
+        // The clamp turns that into zero: this is the compensation being lost.
+        Assert.Equal(0.0, Math.Clamp(release[0], 0.0, 100.0));
+
+        // It recovers immediately rather than staying negative for several ticks.
+        Assert.True(
+            release[1] > 0.0,
+            $"expected the command back above zero on the second tick, it was {release[1]}");
+    }
 }

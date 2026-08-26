@@ -88,25 +88,61 @@ public class AudioLevelSensorSourceTests
     }
 
     /// <summary>
-    /// Both meters see the same mono fold during the experiment, so the left channel's
-    /// level must not change when the needle chain is added.
+    /// Both meters see the same mono fold during the experiment, so reading the needle
+    /// must not change what the left channel reports.
+    ///
+    /// The decay path has to actually run for this to mean anything. ApplySilenceDecay
+    /// is shared by all three detectors and takes _lastAdvanceTicks with it, so a needle
+    /// read interleaved into a decay window consumes decay the next left read would
+    /// otherwise have performed. That is only safe because the decay is a function of
+    /// elapsed wall time, so the total is conserved whichever reader applies it — this
+    /// test is what pins that. Both runs therefore advance the clock past SilenceGap
+    /// first; inside the gap ApplySilenceDecay early-returns and the case is never
+    /// exercised at all.
     /// </summary>
     [Fact]
     public void Read_NeedleDoesNotDisturbTheLeftLevel()
     {
-        var (source, capture, time) = Build();
-        using (source)
+        static float ReadLeftAcrossADecayWindow(bool interleaveNeedle)
         {
+            var capture = new FakeAudioLoopbackCapture();
+            var time = new FakeTimeProvider();
+            using var source = new AudioLevelSensorSource(
+                capture, NullLog.Instance, () => false, time);
+
             source.Read(AudioSensorIds.Left);
             capture.DeliverSine(0.500);
+
+            // Past SilenceGap, so the buffers count as stopped and the decay path runs.
+            time.Advance(TimeSpan.FromMilliseconds(200));
+            source.Read(AudioSensorIds.Left);
+
+            // A further window with decay owed in it.
             time.Advance(TimeSpan.FromMilliseconds(40));
 
-            var before = source.Read(AudioSensorIds.Left);
-            source.Read(AudioSensorIds.Needle);
-            var after = source.Read(AudioSensorIds.Left);
+            if (interleaveNeedle)
+            {
+                source.Read(AudioSensorIds.Needle);
+            }
 
-            Assert.Equal(before, after);
+            return source.Read(AudioSensorIds.Left)!.Value;
         }
+
+        var undisturbed = ReadLeftAcrossADecayWindow(interleaveNeedle: false);
+        var interleaved = ReadLeftAcrossADecayWindow(interleaveNeedle: true);
+
+        // Guard against this test quietly going vacuous the way its first version did:
+        // 240 ms is 3.7 time constants, so the level must have fallen a long way from
+        // the 0 dBFS the sine was playing at. If this ever reads near zero, the decay
+        // path stopped running and the comparison below stopped proving anything.
+        Assert.True(
+            undisturbed < -25f,
+            $"expected the decay path to have run, the level read {undisturbed} dBFS");
+
+        // The needle read consumed the 40 ms of decay, so the left read that follows it
+        // gets none — and still lands on the same level, because the same wall time has
+        // elapsed either way.
+        Assert.Equal(undisturbed, interleaved);
     }
 
     /// <summary>
