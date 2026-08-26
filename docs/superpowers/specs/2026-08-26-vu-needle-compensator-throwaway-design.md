@@ -1,7 +1,9 @@
 # Kompenzátor balistiky ručičky — throwaway merací build
 
 **Dátum:** 2026-08-26
-**Stav:** navrhnuté, nepostavené. Vetva `throwaway/vu-needle-compensator`.
+**Stav:** **postavené, zmerané, PRIJATÉ.** Vetva `throwaway/vu-needle-compensator`.
+Výsledok a to, čo z neho platí ďalej, je na konci dokumentu — kto sa k tejto téme vráti,
+nech si prečíta najprv ten záver.
 
 ## Načo to je
 
