@@ -5,6 +5,12 @@ namespace AnalogHwMonitor.Core;
 /// VU meter needs no new path through the application: the value goes through the same
 /// mapping, the same calibration and the same frame as a CPU temperature.
 ///
+/// THROWAWAY MEASUREMENT BUILD adds a third, <see cref="AudioSensorIds.Needle"/>, which
+/// breaks that symmetry deliberately: it reports deflection in percent rather than a
+/// level, because the compensator has to do the dB-to-percent mapping itself before it
+/// can shape the command. It rides the same capture and the same lifecycle as the two
+/// levels, and for the duration of the experiment all three see the same (L+R)/2 fold.
+///
 /// Nobody starts or stops this from outside. The first <see cref="Read"/> of an audio
 /// identifier starts capture and <see cref="IdleTimeout"/> without one releases it, so
 /// leaving VU meter mode hands the audio device back simply by nobody asking for the
@@ -60,6 +66,14 @@ public sealed class AudioLevelSensorSource : ISensorSource
     private readonly Func<bool> _compensateVolume;
     private readonly TimeProvider _time;
     private readonly VuIntegrator[] _integrators = { new(), new() };
+
+    // THROWAWAY MEASUREMENT BUILD. A third detector, deliberately much faster than the
+    // two above, because the averaging the standard asks for is done by the compensator
+    // rather than by this filter.
+    private readonly VuIntegrator _needleDetector = new(NeedleCompensator.DetectorTauMs / 1000.0);
+    private readonly NeedleCompensator _compensator = new();
+    private long _lastNeedleTicks;
+
     private readonly AudioSamplesHandler _onSamples;
 
     private bool _started;
@@ -151,11 +165,18 @@ public sealed class AudioLevelSensorSource : ISensorSource
         {
             new SensorDescriptor(AudioSensorIds.Left, "Level L", device, SensorKind.Audio, AudioSensorIds.Unit),
             new SensorDescriptor(AudioSensorIds.Right, "Level R", device, SensorKind.Audio, AudioSensorIds.Unit),
+            new SensorDescriptor(
+                AudioSensorIds.Needle, "Needle (compensated)", device, SensorKind.Audio, AudioSensorIds.NeedleUnit),
         };
     }
 
     public float? Read(string sensorId)
     {
+        if (sensorId == AudioSensorIds.Needle)
+        {
+            return ReadNeedle();
+        }
+
         var channel = sensorId switch
         {
             AudioSensorIds.Left => 0,
@@ -187,26 +208,82 @@ public sealed class AudioLevelSensorSource : ISensorSource
 
             ApplySilenceDecay();
 
-            var level = _integrators[channel].Level * AverageToPeak;
-
-            // Returned before the compensation rather than clamped after it: the
-            // compensation would otherwise lift the floor by up to the ceiling, and
-            // digital silence would read -60 dBFS on a quiet system while the mute path
-            // above returned -100 for the same absence of signal.
-            if (level <= 0.0)
-            {
-                return (float)AudioSensorIds.FloorDbfs;
-            }
-
-            var dbfs = 20.0 * Math.Log10(level);
-
-            if (_compensateVolume())
-            {
-                dbfs += Math.Min(-_capture.VolumeDb, MaxCompensationDb);
-            }
-
-            return (float)Math.Max(dbfs, AudioSensorIds.FloorDbfs);
+            return (float)LevelToDbfs(_integrators[channel].Level * AverageToPeak);
         }
+    }
+
+    /// <summary>
+    /// THROWAWAY MEASUREMENT BUILD. The compensated chain: a 15 ms detector, the same
+    /// -40..0 dBFS window the uncompensated meter uses, and the inverse-plant biquad.
+    ///
+    /// The dB window is taken from <see cref="VuModeSwitch"/> rather than from the
+    /// channel's Min/Max on purpose: this sensor already reports deflection, so the
+    /// channel is configured 0..100 and its Min/Max can no longer carry the window.
+    /// Both meters must see the same window or the experiment compares scales instead
+    /// of ballistics.
+    /// </summary>
+    private float? ReadNeedle()
+    {
+        lock (_lifecycle)
+        {
+            _lastRead = _time.GetUtcNow();
+
+            if (!EnsureStarted())
+            {
+                return null;
+            }
+
+            var now = _time.GetUtcNow();
+            var previous = new DateTimeOffset(
+                Interlocked.Exchange(ref _lastNeedleTicks, now.UtcTicks), TimeSpan.Zero);
+
+            double percent;
+
+            if (_capture.IsMuted)
+            {
+                percent = 0.0;
+            }
+            else
+            {
+                ApplySilenceDecay();
+
+                var dbfs = LevelToDbfs(_needleDetector.Level * AverageToPeak);
+
+                percent = ChannelMapper.ToPercent(
+                    dbfs, VuModeSwitch.DefaultMinDbfs, VuModeSwitch.DefaultMaxDbfs);
+            }
+
+            var shaped = _compensator.Advance(percent, now - previous);
+
+            // The compensator returns unclamped on purpose; this is where the command
+            // meets a needle that has a peg at each end. On a release into digital
+            // silence it asks for about -11 % for seven ticks and loses that much
+            // compensation, which is a known and documented limit of the build.
+            return (float)Math.Clamp(shaped, 0.0, 100.0);
+        }
+    }
+
+    /// <summary>
+    /// Level to dBFS, shared by every audio identifier so the floor rule lives in one
+    /// place. Digital silence returns the floor *before* volume compensation rather than
+    /// after: the compensation would otherwise lift the floor by up to its ceiling, and
+    /// silence on a quiet system would read differently from silence on a muted one.
+    /// </summary>
+    private double LevelToDbfs(double level)
+    {
+        if (level <= 0.0)
+        {
+            return AudioSensorIds.FloorDbfs;
+        }
+
+        var dbfs = 20.0 * Math.Log10(level);
+
+        if (_compensateVolume())
+        {
+            dbfs += Math.Min(-_capture.VolumeDb, MaxCompensationDb);
+        }
+
+        return Math.Max(dbfs, AudioSensorIds.FloorDbfs);
     }
 
     public void Dispose()
@@ -242,6 +319,10 @@ public sealed class AudioLevelSensorSource : ISensorSource
         {
             integrator.Reset();
         }
+
+        _needleDetector.Reset();
+        _compensator.Reset();
+        Interlocked.Exchange(ref _lastNeedleTicks, nowTicks);
 
         if (!_capture.TryStart(_onSamples, out var error))
         {
@@ -310,6 +391,8 @@ public sealed class AudioLevelSensorSource : ISensorSource
         {
             integrator.Decay(now - lastAdvance);
         }
+
+        _needleDetector.Decay(now - lastAdvance);
     }
 
     /// <summary>
@@ -323,13 +406,15 @@ public sealed class AudioLevelSensorSource : ISensorSource
             return;
         }
 
+        // THROWAWAY MEASUREMENT BUILD. Both meters get (L+R)/2 so the difference on the
+        // dials is the difference in ballistics and nothing else. Stereo is off for the
+        // duration of the experiment.
         for (var channel = 0; channel < _integrators.Length; channel++)
         {
-            // A mono endpoint feeds both meters from its single channel, so the pair
-            // still reads as a pair rather than leaving the right needle dead.
-            var offset = Math.Min(channel, format.ChannelCount - 1);
-            _integrators[channel].Add(samples, offset, format.ChannelCount, format.SampleRate);
+            _integrators[channel].AddMono(samples, format.ChannelCount, format.SampleRate);
         }
+
+        _needleDetector.AddMono(samples, format.ChannelCount, format.SampleRate);
 
         var now = _time.GetUtcNow().UtcTicks;
         Interlocked.Exchange(ref _lastBufferTicks, now);

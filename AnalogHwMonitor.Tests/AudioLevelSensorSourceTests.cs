@@ -23,12 +23,89 @@ public class AudioLevelSensorSourceTests
         {
             var sensors = source.Discover();
 
-            Assert.Equal(2, sensors.Count);
             Assert.Equal(AudioSensorIds.Left, sensors[0].Id);
             Assert.Equal(AudioSensorIds.Right, sensors[1].Id);
             Assert.All(sensors, s => Assert.Equal(SensorKind.Audio, s.Kind));
-            Assert.All(sensors, s => Assert.Equal("dBFS", s.Unit));
+
+            // The needle is the throwaway build's third sensor and reports a deflection,
+            // so only the two levels carry the dBFS unit.
+            Assert.Equal("dBFS", sensors[0].Unit);
+            Assert.Equal("dBFS", sensors[1].Unit);
+
             Assert.Equal("Realtek Audio · Level L", sensors[0].Display);
+        }
+    }
+
+    [Fact]
+    public void Discover_AlsoPublishesTheCompensatedNeedle()
+    {
+        var (source, _, _) = Build();
+        using (source)
+        {
+            var sensors = source.Discover();
+
+            Assert.Equal(3, sensors.Count);
+            Assert.Equal(AudioSensorIds.Needle, sensors[2].Id);
+            Assert.Equal("%", sensors[2].Unit);
+        }
+    }
+
+    /// <summary>
+    /// The needle sensor reports deflection, not level: a full-scale sine is 0 dBFS,
+    /// which is the top of the -40..0 window and therefore full deflection.
+    /// </summary>
+    [Fact]
+    public void Read_NeedleReturnsPercentRatherThanDecibels()
+    {
+        var (source, capture, time) = Build();
+        using (source)
+        {
+            source.Read(AudioSensorIds.Needle);
+            capture.DeliverSine(0.500);
+            time.Advance(TimeSpan.FromMilliseconds(40));
+
+            var value = source.Read(AudioSensorIds.Needle);
+
+            Assert.NotNull(value);
+            Assert.InRange(value!.Value, 99.0f, 100.0f);
+        }
+    }
+
+    [Fact]
+    public void Read_NeedleIsSilentBeforeAnySignal()
+    {
+        var (source, _, time) = Build();
+        using (source)
+        {
+            source.Read(AudioSensorIds.Needle);
+            time.Advance(TimeSpan.FromMilliseconds(40));
+
+            var value = source.Read(AudioSensorIds.Needle);
+
+            Assert.NotNull(value);
+            Assert.Equal(0.0f, value!.Value);
+        }
+    }
+
+    /// <summary>
+    /// Both meters see the same mono fold during the experiment, so the left channel's
+    /// level must not change when the needle chain is added.
+    /// </summary>
+    [Fact]
+    public void Read_NeedleDoesNotDisturbTheLeftLevel()
+    {
+        var (source, capture, time) = Build();
+        using (source)
+        {
+            source.Read(AudioSensorIds.Left);
+            capture.DeliverSine(0.500);
+            time.Advance(TimeSpan.FromMilliseconds(40));
+
+            var before = source.Read(AudioSensorIds.Left);
+            source.Read(AudioSensorIds.Needle);
+            var after = source.Read(AudioSensorIds.Left);
+
+            Assert.Equal(before, after);
         }
     }
 
@@ -122,8 +199,19 @@ public class AudioLevelSensorSourceTests
         }
     }
 
+    /// <summary>
+    /// THROWAWAY MEASUREMENT BUILD. This used to be Read_KeepsTheTwoChannelsApart and
+    /// asserted that a signal on the left alone left the right needle at the floor. The
+    /// experiment deliberately removes that: both meters are fed (L+R)/2 so the only
+    /// difference between the two dials is their ballistics. Restore the per-channel
+    /// assertion together with the per-channel fold in OnSamples when the build is
+    /// thrown away.
+    ///
+    /// Full scale on the left and silence on the right folds to a steady 0.5, which is
+    /// -2.1 dBFS once the pi/2 peak calibration is applied — and the same on both.
+    /// </summary>
     [Fact]
-    public void Read_KeepsTheTwoChannelsApart()
+    public void Read_FoldsTheTwoChannelsToMonoForTheExperiment()
     {
         var capture = new FakeAudioLoopbackCapture();
         using var source = new AudioLevelSensorSource(
@@ -140,8 +228,11 @@ public class AudioLevelSensorSourceTests
 
         capture.Deliver(samples);
 
-        Assert.True(source.Read(AudioSensorIds.Left) > -5f);
-        Assert.Equal((float)AudioSensorIds.FloorDbfs, source.Read(AudioSensorIds.Right));
+        var left = source.Read(AudioSensorIds.Left);
+        var right = source.Read(AudioSensorIds.Right);
+
+        Assert.Equal(-2.1, left!.Value, precision: 1);
+        Assert.Equal(left, right);
     }
 
     /// <summary>
