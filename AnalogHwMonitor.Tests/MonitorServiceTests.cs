@@ -372,28 +372,66 @@ public class MonitorServiceTests
     /// <summary>
     /// The tray and the settings window turn VU mode on by mutating the configuration the
     /// service already holds, so the Config setter never runs and cannot be what drops the
-    /// history. Ticking through a mode change must still prime rather than lead, otherwise
-    /// the first VU tick is kicked by a percentage left over from a load sensor.
+    /// history. Only the VU mode check in Tick can, and this pins it.
+    ///
+    /// Channels 0 and 1 carry real sensor ids before VU mode is ever switched on, so the
+    /// stash restores something the fake can answer and the two channels stay readable
+    /// while VU mode is off. That matters: AppConfig.CreateDefault() leaves those channels
+    /// without a SensorId, and with an empty stash the toggle back would send them through
+    /// the missing branch, whose own Reset() would clear the compensators no matter what
+    /// the VU mode check did. A real user's stash holds real sensor ids, so this is the
+    /// production arrangement as well as the honest test.
+    ///
+    /// The level also moves while VU mode is off, which is what separates a reset from a
+    /// bare no-op: the history says 0 % and the level now says 70 %. Reset, the first VU
+    /// tick primes and sends 179. Not reset, it leads the step and sends 190.
     /// </summary>
     [Fact]
     public void Tick_ResetsTheCompensatorsWhenVuModeIsToggledInPlace()
     {
-        var (config, sensors) = VuModeAt(-12f);
+        var config = AppConfig.CreateDefault();
+        config.Channels[0].SensorId = "cpu-load";
+        config.Channels[1].SensorId = "gpu-load";
+        config.Channels[2].SensorId = "ram-load";
+        config.Channels[3].SensorId = "cpu-temp";
+        config.Channels[4].SensorId = "gpu-temp";
+        VuModeSwitch.Set(config, true);
+
+        var sensors = new FakeSensorSource(new Dictionary<string, float?>
+        {
+            [AudioSensorIds.Left] = -40f,
+            [AudioSensorIds.Right] = -40f,
+            ["cpu-load"] = 50f,
+            ["gpu-load"] = 50f,
+            ["ram-load"] = 0f,
+            ["cpu-temp"] = 30f,
+            ["gpu-temp"] = 30f,
+        });
+
         var link = new FakeMeterLink();
         var time = new FakeTimeProvider();
         using var service = new MonitorService(sensors, link, config, NullLog.Instance, time);
 
-        // Settle in VU mode, so the compensators hold a full 70 % history.
+        // Settle in VU mode at the bottom of the window, so the compensators hold a
+        // primed 0 % history.
         for (var i = 0; i < 10; i++)
         {
             time.Advance(TimeSpan.FromMilliseconds(40));
             service.Tick();
         }
 
-        // Out of VU mode and straight back, exactly as the tray menu does it.
+        // Out of VU mode, exactly as the tray menu does it: in place, no assignment.
         VuModeSwitch.Set(service.Config, false);
         time.Advance(TimeSpan.FromMilliseconds(40));
         service.Tick();
+
+        // Both channels are on load sensors the fake answers, so nothing here is missing
+        // and the missing branch's Reset() cannot be what clears the history.
+        // 50 % of 0..100 is PWM 128; a missing sensor would have parked them at 0.
+        Assert.StartsWith("V:128,128,", link.Frames[^1]);
+
+        sensors.Set(AudioSensorIds.Left, -12f);
+        sensors.Set(AudioSensorIds.Right, -12f);
 
         VuModeSwitch.Set(service.Config, true);
         time.Advance(TimeSpan.FromMilliseconds(40));
