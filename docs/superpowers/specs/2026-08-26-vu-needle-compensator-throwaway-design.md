@@ -114,9 +114,19 @@ Tri veci, ktoré k tomu patria a nie sú kozmetika:
 - **`dt` sa oreže na ⟨5 ms, 200 ms⟩.** Bez dolnej hranice `k` vybuchne, ak by dva ticky
   prišli tesne za sebou. Horná ošetruje stall — filter je stabilný, po pár tickoch sa
   dorovná.
-- **Výstup sa clampuje na 0–100 % pred PWM.** Na doznievaní do ticha chce ísť na −11,5 %
-  počas asi siedmich tickov a clamp mu to nedovolí, takže tam je kompenzácia oslabená.
-  Aj tak: ručička sa dorazu dotkne na −1,3 % namiesto dnešných −14,0 %.
+- **Výstup sa clampuje na 0–100 % pred PWM.** Na doznievaní chce ísť pod nulu a clamp mu
+  to nedovolí, takže tam je kompenzácia oslabená. Aj tak sa ručička dorazu len dotkne
+  (−0,4 %) namiesto toho, aby doň dnes bila (−16,3 %).
+
+  > **Oprava 2026-08-26, po implementácii.** Pôvodne tu stálo „−11,5 % počas asi siedmich
+  > tickov" a „−1,3 % namiesto dnešných −14,0 %". Obe čísla boli z mojej simulácie, ktorá
+  > **nemodelovala `SilenceGap`** a bola navyše počítaná ešte s `ωₜ = 16` namiesto
+  > finálnych 13,4221. Implementer to odmeral na skutočnom filtri: skok povelu z plnej
+  > výchylky na nulu dá **−6,33 % počas jedného ticku**, nie −11 % počas siedmich, a to
+  > číslo je odteraz pripnuté testom `Release_AsksForANegativeCommandTheClampMustDiscard`.
+  > Prepočet s modelovanou 150 ms bránou dáva pri kroku na −12 dBFS podiel −4,4 % (čo je
+  > tých −6,33 % preškálovaných zo 100 % na 70 %) a minimum ručičky −0,4 % proti dnešným
+  > −16,3 %. Záver drží, čísla nie — a nemali tu byť bez merania.
 - **Stav sa resetuje tam, kde sa dnes resetujú integrátory** (`EnsureStarted`, pred
   `TryStart`), inak by po znovuzapnutí capture stará história kopla ručičkou.
 
@@ -167,8 +177,11 @@ záver minulého dokumentu. Do logu ide pri štarte riadok, že ide o merací bu
 
 ## Čo budú oči vidieť
 
-Na skoku na −12 dBFS špička **85,6 % → 70,3 %**, čiže odraz zmizne, a na doznievaní
-ručička prestane biť do nuly. To sú tie dve viditeľné veci.
+Na skoku na −12 dBFS špička **85,8 % → 70,6 %** (presah 22,6 % → 0,9 %), čiže odraz
+zmizne, a na doznievaní ručička prestane biť do nuly. To sú tie dve viditeľné veci.
+
+Aj tieto dve čísla sú prepočítané na finálne `ωₜ = 13,4221`; pôvodne tu stálo
+85,6 → 70,3 z behu s `ωₜ = 16`.
 
 Ak sa pravý merák aj tak nebude páčiť, je to legitímny a užitočný výsledok experimentu,
 nie jeho zlyhanie.
