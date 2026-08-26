@@ -213,6 +213,16 @@ nie jeho zlyhanie.
 
 `git checkout main`, rebuild, zmazať `config.throwaway.json`. `main` sa nedotkne.
 
+**Vetva `throwaway/vu-needle-compensator` sa ale nemaže.** Na rozdiel od minulého
+experimentu, kde bola po verdikte zahodená, tu ostáva zámerne — je to hotový merací
+prípravok. Mono fold `(L+R)/2`, presmerovanie konfigurácie do `config.throwaway.json`
+a pseudo-senzor, ktorý vie na kanál poslať čokoľvek v percentách, sú presne tie tri veci,
+ktoré by sa pri ďalšom pokuse s ručičkami stavali znova. Kto bude robiť ďalší experiment,
+nech vychádza odtiaľto, nie z čistého `main`.
+
+Poriadna implementácia s touto vetvou nesúvisí a vychádza z `main` — viď
+[`2026-08-26-vu-needle-compensator-production-design.md`](2026-08-26-vu-needle-compensator-production-design.md).
+
 ---
 
 # Výsledok
