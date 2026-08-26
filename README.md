@@ -171,6 +171,12 @@ channel therefore stores two calibration points.
 Everything between those two points is interpolated linearly. Other channels keep
 running normally while one is being calibrated.
 
+On a VU channel the **PWM** column shows the value the level maps to, not always the value
+on the wire. The needle correction described above shapes the command during a transient
+and leaves it alone once the reading settles, so the two agree whenever the needle is
+standing still — which is when you calibrate. The **Set PWM** slider bypasses the
+correction completely, so a raw value stays exactly where you put it.
+
 ## VU meter mode
 
 The tray icon's checkable **VU meter** item, and the settings window's own
@@ -228,6 +234,19 @@ compensation is a checkbox rather than an assumption baked into the math. The
 symptom that means it should be turned off is the needles moving the *wrong* way
 relative to the volume knob — quieter as you turn the volume up, louder as you
 turn it down.
+
+The needle itself is corrected. A moving-coil meter is a second-order system, and this one
+was measured from 240 fps video of a commanded step: damping ratio 0.391, natural frequency
+11.81 rad/s. That makes 26 % of overshoot where the VU standard asks for 1 to 1.5 %, and it
+puts a 2.9 dB resonant peak at 1.57 Hz — 94 BPM, so ordinary music drives the needle at the
+one frequency it is worst at. In VU meter mode both needles' commands go through a filter
+that cancels those measured dynamics and substitutes the standard's, which takes the
+overshoot to about 1 %, stops the needle hitting the zero stop on a release, and removes the
+resonance entirely.
+
+The correction applies to the two VU channels and only while VU meter mode is on. The other
+three do not need it: a temperature does not jump to 90 °C in milliseconds and neither does
+memory use, so there is no step for a needle to overshoot.
 
 ## Configuration
 
