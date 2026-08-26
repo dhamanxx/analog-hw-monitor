@@ -147,4 +147,77 @@ public class NeedleCompensatorTests
         compensator.Advance(0.0, step);
         return compensator.Advance(70.0, step);
     }
+
+    /// <summary>
+    /// Frequency of the needle's own mechanical resonance: at zeta 0.391 the peak of a
+    /// second-order response sits at omegaN*sqrt(1 - 2*zeta^2), which is 9.84 rad/s or
+    /// 1.57 Hz. That is 94 BPM, so an ordinary music envelope drives it directly.
+    /// </summary>
+    private const double NeedleResonanceHertz = 1.57;
+
+    /// <summary>
+    /// The uncompensated needle amplifies at its resonance — this is the thing being
+    /// removed, and the test below is meaningless if it is not actually present.
+    /// </summary>
+    [Fact]
+    public void SimulatedNeedle_AmplifiesAtItsOwnResonance()
+    {
+        var swing = SteadySwing(NeedleResonanceHertz, compensated: false);
+
+        Assert.InRange(20.0 * Math.Log10(swing / 25.0), 2.0, 3.5);
+    }
+
+    /// <summary>
+    /// The property the owner actually judged the build on: "the needle is less erratic and
+    /// does not oscillate like crazy". That is not transient overshoot and no step test
+    /// measures it. TargetZeta 0.81 is above 1/sqrt(2), above which a second-order response
+    /// has no resonant peak at all, and this pins the roughly 5 dB that buys at 94 BPM.
+    ///
+    /// If this fails and the step tests still pass, someone has retuned TargetZeta below
+    /// 0.707. Do not relax the range — the resonance is the point.
+    /// </summary>
+    [Fact]
+    public void Resonance_IsFlattenedByAboutFiveDecibels()
+    {
+        var uncompensated = SteadySwing(NeedleResonanceHertz, compensated: false);
+        var compensated = SteadySwing(NeedleResonanceHertz, compensated: true);
+
+        Assert.InRange(20.0 * Math.Log10(compensated / uncompensated), -6.0, -4.0);
+    }
+
+    /// <summary>
+    /// Half the peak-to-peak deflection the needle settles into for a sinusoidal command
+    /// of amplitude 25 about mid-scale, measured over the second half of the run so the
+    /// start-up transient is excluded.
+    ///
+    /// 25 about 50 is chosen so the shaped command stays inside 0-100 — the compensator's
+    /// high-frequency gain is 1.2916, so it swings roughly 36 to 68 and never meets the
+    /// caller's clamp. A larger amplitude would measure clipping instead of ballistics.
+    /// </summary>
+    private static double SteadySwing(double hertz, bool compensated)
+    {
+        var compensator = new NeedleCompensator();
+        var deflection = 0.0;
+        var velocity = 0.0;
+        var low = double.MaxValue;
+        var high = double.MinValue;
+
+        for (var tick = 0; tick < 400; tick++)
+        {
+            var seconds = tick * Tick.TotalSeconds;
+            var command = 50.0 + (25.0 * Math.Sin(2.0 * Math.PI * hertz * seconds));
+            var driven = compensated ? compensator.Advance(command, Tick) : command;
+
+            (deflection, velocity) = NeedleSimulation.Step(
+                deflection, velocity, Math.Clamp(driven, 0.0, 100.0), Tick);
+
+            if (tick >= 200)
+            {
+                low = Math.Min(low, deflection);
+                high = Math.Max(high, deflection);
+            }
+        }
+
+        return (high - low) / 2.0;
+    }
 }
