@@ -16,7 +16,7 @@
 - The dB window for **both** chains is −40…0 dBFS (`VuModeSwitch.DefaultMinDbfs` / `DefaultMaxDbfs`). The scale must not differ between the two meters — that is the whole point of the experiment.
 - `OnSamples` runs on the WASAPI capture thread. It must not allocate and must not take a lock. Existing comments in `AudioLevelSensorSource` explain why a lock there deadlocks the process; do not add one.
 - Channel 0 (left, pin 3) keeps today's behaviour bit for bit. Any change that alters it is a bug.
-- Build: `dotnet build AnalogHwMonitor.sln`. Tests: `dotnet test AnalogHwMonitor.sln`. There are 205 tests today; all must still pass.
+- Build: `dotnet build AnalogHwMonitor.sln`. Tests: `dotnet test AnalogHwMonitor.sln`. There are 184 tests on this branch after Task 1 (177 of them pre-existing, 7 skipped by design); all must still pass.
 
 ---
 
@@ -221,7 +221,7 @@ Add `AddMono` immediately after `Add`:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test AnalogHwMonitor.sln`
-Expected: PASS, all 205 existing tests plus the 7 new ones.
+Expected: PASS. The pre-change baseline is 177 tests (7 of them skipped by design), so expect 184.
 
 - [ ] **Step 5: Commit**
 
