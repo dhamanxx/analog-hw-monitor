@@ -26,5 +26,8 @@ public sealed class FakeSensorSource : ISensorSource
         return _values.TryGetValue(sensorId, out var value) ? value : null;
     }
 
+    /// <summary>Changes a reading mid-test; null makes the sensor unreadable.</summary>
+    public void Set(string sensorId, float? value) => _values[sensorId] = value;
+
     public void Dispose() => Disposed = true;
 }
